@@ -80,6 +80,7 @@ argstr(int n, char *buf, int max)
 }
 
 // Prototypes for the functions that handle system calls.
+// 定義在 kernel/sysfile.c 中
 extern uint64 sys_fork(void);
 extern uint64 sys_exit(void);
 extern uint64 sys_wait(void);
@@ -104,6 +105,7 @@ extern uint64 sys_close(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
+// 一個函數指標陣列
 static uint64 (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
 [SYS_exit]    sys_exit,
@@ -133,11 +135,15 @@ syscall(void)
 {
   int num;
   struct proc *p = myproc();
-
+  // 在 user/usys.S 裡的 a7 儲存了系統調用號
+  // 然後在 kernel/trampoline.S 中 uservec 會將 a7 的值保存到 trapframe 裡  
+  // 他儲存的位址是 p->trapframe->a7（這是結構體的欄位名稱），不要跟暫存器名稱搞混
   num = p->trapframe->a7;
+  // NELEM() 是一個巨集，計算陣列的元素數量
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
+    // return value 存在 p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();
   } else {
     printf("%d %s: unknown sys call %d\n",
