@@ -72,10 +72,18 @@ sys_read(void)
   int n; //number of bytes to read
   uint64 p; //user-space pointer where data will be copied
 
+  // 獲取 用戶程式 read 的第二個參數（透過 trapframe）
   argaddr(1, &p);
+  // 獲取 用戶程式 read 的第三個參數（透過 trapframe）
   argint(2, &n);
+  // argfd 在判斷 file descriptor 是否有效
+  // 並取得對應的 struct file 指標
+  // 如果無效則返回 -1
+  // 如果有效，f 就會指向對應的 struct file 結構
+  // 這樣後續的 fileread 調用就可以使用這個 struct file 來進行讀取操作
   if(argfd(0, 0, &f) < 0)
     return -1;
+  // 定義在 kernel/file.c 中
   return fileread(f, p, n);
 }
 

@@ -20,6 +20,8 @@ trampoline:
 .globl uservec
 uservec:    
 	#
+        # kernel 在 kernel/trap.c 中設定 stvec = uservec 的地址
+        # 當發生 trap 發生時， CPU 硬體自動跳轉到 stvec 指向的地址
         # trap.c sets stvec to point here, so
         # traps from user space start here,
         # in supervisor mode, but with a
@@ -28,14 +30,18 @@ uservec:
 
         # save user a0 in sscratch so
         # a0 can be used to get at TRAPFRAME.
+        # 保存 a0 到 sscratch
         csrw sscratch, a0
 
         # each process has a separate p->trapframe memory area,
         # but it's mapped to the same virtual address
         # (TRAPFRAME) in every process's user page table.
+        # a0 設為 trapframe 的地址
         li a0, TRAPFRAME
         
         # save the user registers in TRAPFRAME
+        # trapframe 用來保存用戶暫存器
+        # sd: Store Doubleword
         sd ra, 40(a0)
         sd sp, 48(a0)
         sd gp, 56(a0)
@@ -68,15 +74,20 @@ uservec:
         sd t6, 280(a0)
 
 	# save the user a0 in p->trapframe->a0
+        # 原本的 a0 暫存器已經被放到 sscratch 去
         csrr t0, sscratch
         sd t0, 112(a0)
 
+        # 設置 kernel 堆疊指標
         # initialize kernel stack pointer, from p->trapframe->kernel_sp
         ld sp, 8(a0)
 
+        # 將 CPU 核心編號載入到 tp 暫存器中
+        # Hart = HardwareThread
         # make tp hold the current hartid, from p->trapframe->kernel_hartid
         ld tp, 32(a0)
 
+        # 將 kernel/trap.c/usertrap 函數的地址載入到 t0 
         # load the address of usertrap(), from p->trapframe->kernel_trap
         ld t0, 16(a0)
 
@@ -95,7 +106,9 @@ uservec:
         sfence.vma zero, zero
 
         # jump to usertrap(), which does not return
+        # usertrap 會使用 usertrapret 函數直接回到用戶程式
         jr t0
+        # 以下的代碼是永遠不會執行的
 
 .globl userret
 userret:
@@ -105,6 +118,7 @@ userret:
         # a0: user page table, for satp.
 
         # switch to the user page table.
+        # 將用戶頁表設定到 satp 暫存器
         sfence.vma zero, zero
         csrw satp, a0
         sfence.vma zero, zero
@@ -146,6 +160,10 @@ userret:
 	# restore user a0
         ld a0, 112(a0)
         
-        # return to user mode and user pc.
+        # return to user mode and user.
         # usertrapret() set up sstatus and sepc.
+        # sret 會做三件事
+        # 1. 特權模式切換
+        # 2. sstatus.SIE = sstatus.SPIE;
+        # 3. 程式跳轉
         sret
