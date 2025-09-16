@@ -68,9 +68,9 @@ sys_dup(void)
 uint64
 sys_read(void)
 {
-  struct file *f;
-  int n;
-  uint64 p;
+  struct file *f; // file pointer point to the open file 
+  int n; //number of bytes to read
+  uint64 p; //user-space pointer where data will be copied
 
   argaddr(1, &p);
   argint(2, &n);
