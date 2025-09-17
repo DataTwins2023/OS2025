@@ -99,8 +99,7 @@ sys_trace(void)
   int mask;
 
   // 從用戶空間獲取第一個參數 (mask)
-  if(argint(0, &mask) < 0) // 獲取失敗
-    return -1;
+  argint(0, &mask);
 
   myproc() -> trace_mask = mask; // 設置當前進程的 trace_mask
   return 0; // 成功
