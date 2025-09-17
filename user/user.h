@@ -1,4 +1,6 @@
 struct stat;
+//os25 modify code:
+struct sysinfo;
 
 // system calls
 int fork(void);
@@ -22,6 +24,8 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+//os25 modify code: add sysinfo
+int sysinfo(struct sysinfo*);
 
 // ulib.c
 int stat(const char*, struct stat*);

@@ -188,8 +188,9 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-
-
+	# os25 modified
+	$U/_sysinfotest\
+	$U/_sysinfo\
 
 
 ifeq ($(LAB),$(filter $(LAB), lock))
