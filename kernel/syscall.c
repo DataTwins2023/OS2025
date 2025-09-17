@@ -102,6 +102,8 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
+// fix bug, if no this extern sys_trace, compiler can't find it
+extern uint64 sys_trace(void);
 
 // hint 6: for get the syscall name
 static char *syscall_names[] = {
