@@ -171,6 +171,7 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
 .PRECIOUS: %.o
 
+# hint 1: add trace to UPROGS
 UPROGS=\
 	$U/_cat\
 	$U/_echo\
@@ -191,6 +192,9 @@ UPROGS=\
 	# os25 modified
 	$U/_sysinfotest\
 	$U/_sysinfo\
+	$U/_trace
+
+
 
 
 ifeq ($(LAB),$(filter $(LAB), lock))

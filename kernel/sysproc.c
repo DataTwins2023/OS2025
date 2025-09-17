@@ -91,3 +91,16 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// hint 3: add sys_trace in sysproc.c
+uint64
+sys_trace(void)
+{
+  int mask;
+
+  // 從用戶空間獲取第一個參數 (mask)
+  argint(0, &mask);
+
+  myproc() -> trace_mask = mask; // 設置當前進程的 trace_mask
+  return 0; // 成功
+}

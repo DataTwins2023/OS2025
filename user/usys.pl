@@ -14,7 +14,8 @@ sub entry {
     print " ecall\n";
     print " ret\n";
 }
-	
+
+# entry 是上面定義的函數，make qemu 時會透過執行這個函數來生成 usys.S	
 entry("fork");
 entry("exit");
 entry("wait");
@@ -36,3 +37,6 @@ entry("getpid");
 entry("sbrk");
 entry("sleep");
 entry("uptime");
+
+# hint 2: add a stub
+entry("trace");

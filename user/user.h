@@ -26,6 +26,8 @@ int sleep(int);
 int uptime(void);
 //os25 modify code: add sysinfo
 int sysinfo(struct sysinfo*);
+// hint 2: add a prototype for trace
+int trace(int);
 
 // ulib.c
 int stat(const char*, struct stat*);
