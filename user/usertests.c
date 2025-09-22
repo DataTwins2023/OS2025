@@ -997,6 +997,7 @@ forkfork(char *s)
 void
 forkforkfork(char *s)
 {
+  // 刪除 “stopforking” 檔案（如果存在的話）
   unlink("stopforking");
 
   int pid = fork();
@@ -1007,9 +1008,11 @@ forkforkfork(char *s)
   if(pid == 0){
     while(1){
       int fd = open("stopforking", 0);
+      // 如果文件存在，則退出循環並結束子進程
       if(fd >= 0){
         exit(0);
       }
+      // 嘗試創建一個新的子進程，如果失敗則創建 "stopforking" 文件以停止進程
       if(fork() < 0){
         close(open("stopforking", O_CREATE|O_RDWR));
       }
