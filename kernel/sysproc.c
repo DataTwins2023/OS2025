@@ -5,6 +5,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -34,6 +35,7 @@ sys_wait(void)
   argaddr(0, &p);
   return wait(p);
 }
+
 
 uint64
 sys_sbrk(void)
@@ -103,4 +105,26 @@ sys_trace(void)
 
   myproc() -> trace_mask = mask; // 設置當前進程的 trace_mask
   return 0; // 成功
+}
+
+
+uint64
+sys_sysinfo(void)
+{
+  struct sysinfo info;
+  uint64 uaddr;   // user pointer
+
+  // 取出使用者傳來的指標
+  argaddr(0, &uaddr);
+  
+  // 填入 kernel 收集的資訊
+  info.freemem = freeram();  // 需要實作 freeram()
+  info.nproc = proc_count(); // 需要實作 proc_count()
+
+  // copy 到 user space
+  struct proc *p = myproc();
+  if (copyout(p->pagetable, uaddr, (char*)&info, sizeof(info)) < 0)
+    return -1;
+
+  return 0;
 }

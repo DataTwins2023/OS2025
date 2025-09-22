@@ -40,3 +40,4 @@ entry("uptime");
 
 # hint 2: add a stub
 entry("trace");
+entry("sysinfo");

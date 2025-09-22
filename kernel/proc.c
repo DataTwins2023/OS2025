@@ -684,3 +684,22 @@ procdump(void)
     printf("\n");
   }
 }
+
+
+uint64
+proc_count(void)
+{
+    struct proc *p;
+    int cnt = 0;
+
+    // 保護 process table 避免 race condition
+    //acquire(&ptable.lock); 目前不加lock 大部分情況不會有race condition
+    for(p = proc; p < &proc[NPROC]; p++){
+        if(p->state != UNUSED)
+            cnt++;
+    }
+    //release(&ptable.lock);
+
+    return cnt;
+}
+

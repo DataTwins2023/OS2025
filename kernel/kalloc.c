@@ -80,3 +80,19 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+uint64
+freeram(void)
+{
+    struct run *r; //用來遍歷 kmem.freelist 的鏈表
+    uint64 count = 0; //用來計算目前有多少頁
+    //lock
+    acquire(&kmem.lock);      // 保護 freelist
+
+    //遍歷 kmem.freelist
+    for(r = kmem.freelist; r != 0; r = r->next)
+        count++;
+    release(&kmem.lock);
+
+    return count * PGSIZE;    // 換算成 byte 並回傳
+}
