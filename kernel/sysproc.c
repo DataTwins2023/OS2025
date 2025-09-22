@@ -99,11 +99,21 @@ uint64
 sys_trace(void)
 {
   int mask;
+  struct proc *p;
 
   // 從用戶空間獲取第一個參數 (mask)
   argint(0, &mask);
 
-  myproc() -> trace_mask = mask; // 設置當前進程的 trace_mask
+  if(mask < 0) {
+    return -1; // 如果 mask 為負數，返回錯誤
+  }
+
+  p = myproc(); // 獲取當前進程的 PCB
+  if(p == 0) {
+    return -1; // 如果沒有當前進程，返回錯誤
+  }
+
+  p -> trace_mask = mask; // 設置當前進程的 trace_mask
   return 0; // 成功
 }
 

@@ -37,6 +37,7 @@ uservec:
         # but it's mapped to the same virtual address
         # (TRAPFRAME) in every process's user page table.
         # a0 設為 trapframe 的地址
+        # 將常數 TRAPFRAME 的值載入到暫存器 a0 中
         li a0, TRAPFRAME
         
         # save the user registers in TRAPFRAME
@@ -75,6 +76,8 @@ uservec:
 
 	# save the user a0 in p->trapframe->a0
         # 原本的 a0 暫存器已經被放到 sscratch 去
+        # CSR 暫存器只能與通用暫存器(t0, t1, a0 等) 互動
+        # 112(a0) 是 記憶體位址，不是暫存器！
         csrr t0, sscratch
         sd t0, 112(a0)
 
@@ -91,7 +94,7 @@ uservec:
         # load the address of usertrap(), from p->trapframe->kernel_trap
         ld t0, 16(a0)
 
-
+        # fetch kernel 的 page table
         # fetch the kernel page table address, from p->trapframe->kernel_satp.
         ld t1, 0(a0)
 
