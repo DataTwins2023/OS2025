@@ -305,10 +305,15 @@ UPROGS=\
 在 user/user.h 中宣告 sysinfo() 的prototype (並注意先行宣告struct sysinfo)
 ``` c
 //os25 modify code: add sysinfo
+struct sysinfo;
 int sysinfo(struct sysinfo*);
 ```
+sysinfo 的prototype在 kernel/sysinfo.h有定義  
 ``` c
-struct sysinfo;
+struct sysinfo {
+  uint64 freemem;   // amount of free memory (bytes)
+  uint64 nproc;     // number of process
+};
 ```
 
 ### hint 3
@@ -333,7 +338,28 @@ sys_sysinfo(void)
 }
 ```
 ### hint 4
-參考在kernel/sysfile.c 中 sys_fstat() 和kernel/file.c 中 filestat() 中copyout()的方法，收集到的資訊回傳到user space中
+參考在 `kernel/sysfile.c` 中 `sys_fstat()` 和 `kernel/file.c` 中 `filestat()` 中 copyout()的方法，收集到的資訊回傳到user space中
+
+``` c
+int
+filestat(struct file *f, uint64 addr)
+{
+  struct proc *p = myproc();      // 取得目前執行的 process
+  struct stat st;                 // 在 kernel stack 上準備一個 stat 結構
+
+  if(f->type == FD_INODE || f->type == FD_DEVICE){
+    ilock(f->ip);                 // 鎖住 inode
+    stati(f->ip, &st);            // 把 inode 的資訊填進 st
+    iunlock(f->ip);               // 解鎖 inode
+
+    // 把 kernel stack 上的 st 複製到 user process 的記憶體空間
+    if(copyout(p->pagetable, addr, (char *)&st, sizeof(st)) < 0)
+      return -1;
+    return 0;
+  }
+  return -1;
+}
+```
 
 ### hint 5
 如果成功將資訊回傳到user space則return 0否則 return -1
