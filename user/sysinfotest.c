@@ -41,27 +41,33 @@ countfree()
 void
 testmem() {
   struct sysinfo info;
+  // 計算空閑的記憶體空間
+  // 在 19 行
   uint64 n = countfree();
   
   sinfo(&info);
 
+  // 比對 info.freemem 跟 countfree 的結果
   if (info.freemem!= n) {
     printf("FAIL: free mem %d (bytes) instead of %d\n", info.freemem, n);
     exit(1);
   }
   
+  // sbrk 增加 process 的 heap 大小，分配一個 page 的記憶體
   if((uint64)sbrk(PGSIZE) == 0xffffffffffffffff){
     printf("sbrk failed");
     exit(1);
   }
 
   sinfo(&info);
-    
+  
+  // 已經分配一個 page size 給 heap 了，所以空閒 mem 會少 PGSIZE
   if (info.freemem != n-PGSIZE) {
     printf("FAIL: free mem %d (bytes) instead of %d\n", n-PGSIZE, info.freemem);
     exit(1);
   }
   
+  // 收回分配給 heap 的 page
   if((uint64)sbrk(-PGSIZE) == 0xffffffffffffffff){
     printf("sbrk failed");
     exit(1);
@@ -69,6 +75,7 @@ testmem() {
 
   sinfo(&info);
     
+// 已經收回了所以空閒 mem 又會回到原本的數字
   if (info.freemem != n) {
     printf("FAIL: free mem %d (bytes) instead of %d\n", n, info.freemem);
     exit(1);
@@ -84,6 +91,8 @@ testcall() {
     exit(1);
   }
 
+  // 傳入無效指標
+  // 這是會被 copyout (kernel/vm.c) 給擋掉
   if (sysinfo((struct sysinfo *) 0xeaeb0b5b00002f5e) !=  0xffffffffffffffff) {
     printf("FAIL: sysinfo succeeded with bad argument\n");
     exit(1);
