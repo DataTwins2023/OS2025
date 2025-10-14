@@ -113,6 +113,9 @@ timervec:
 
         # arrange for a supervisor software interrupt
         # after this handler returns.
+        # sip = Supervisor Interrupt Pending 暫存器
+        # 寫入 2 = 設定 SSIP (Supervisor Software Interrupt Pending) bit
+        # 觸發一個 S-mode 的軟體中斷！
         li a1, 2
         csrw sip, a1
 
