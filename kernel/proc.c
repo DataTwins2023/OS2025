@@ -565,7 +565,7 @@ scheduler(void)
     p->state = RUNNING;
     c->proc = p;
     procstatelog(p);
-    swtch(&c->context, &p->context);
+    
 
     // Process is done running for now.
     // It should have changed its p->state before coming back.
@@ -582,23 +582,32 @@ scheduler(void)
 // be proc->intena and proc->noff, but that would
 // break in the few places where a lock is held but
 // there's no process.
+// 讓 scheduler 取得 CPU
 void
 sched(void)
 {
   int intena;
   struct proc *p = myproc();
-
+  // 確認有沒有取得鎖
   if(!holding(&p->lock))
     panic("sched p->lock");
+  // 確保只有一個鎖
   if(mycpu()->noff != 1)
     panic("sched locks");
+  // 確認狀態不是 RUNNING
   if(p->state == RUNNING)
     panic("sched running");
+  // 確認中斷已經關閉
+  // 因為上下文切換期間不能被中斷
   if(intr_get())
     panic("sched interruptible");
 
+  // 透過 intena 保存當前形成的中斷啟用狀態
   intena = mycpu()->intena;
+  // 做 switch
+  // 儲存當前行程的上下文並切換到 並切換到 CPU 的 scheduler context，使 scheduler 能繼續執行以選擇下一個可執行的行程
   swtch(&p->context, &mycpu()->context);
+  // 當這個行程再次被 scheduler 選中，會切換回來這裡，恢復 intena
   mycpu()->intena = intena;
 }
 

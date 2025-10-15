@@ -7,6 +7,7 @@
 
 .globl swtch
 swtch:
+        # 保存舊的 context 到 a0 指向的位址
         sd ra, 0(a0)
         sd sp, 8(a0)
         sd s0, 16(a0)
@@ -22,6 +23,7 @@ swtch:
         sd s10, 96(a0)
         sd s11, 104(a0)
 
+        # 載入新的 context
         ld ra, 0(a1)
         ld sp, 8(a1)
         ld s0, 16(a1)
@@ -37,6 +39,7 @@ swtch:
         ld s10, 96(a1)
         ld s11, 104(a1)
         
+        # 返回新的 ra
         ret
 
 	

@@ -136,6 +136,8 @@ kerneltrap()
 {
   int which_dev = 0;
   // 一開始保存
+  // 這邊可能切換進程
+  // sepc 可能被改變
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
@@ -153,8 +155,6 @@ kerneltrap()
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
-    // 這邊可能切換進程
-    // sepc 可能被改變
     implicityield();
 
   // the yield() may have caused some traps to occur,
