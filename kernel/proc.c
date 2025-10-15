@@ -115,8 +115,12 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
+  // 遍歷 proc[] 陣列
+  // 找 state == UNUSED 的 slot
+  // 找不到就返回 0
   for(p = proc; p < &proc[NPROC]; p++) {
+    // 防止多個 CPU 同時選到同一個槽位
+    // 找到後保持鎖定，繼續初始化
     acquire(&p->lock);
     if(p->state == UNUSED) {
       goto found;
@@ -127,19 +131,24 @@ allocproc(void)
   return 0;
 
 found:
+  // 分配 pid 並設定狀態
   p->pid = allocpid();
   p->state = USED;
 
   // Allocate a trapframe page.
+  // 呼叫 kalloc 分配一個 page 存放 trapframe
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+    // 失敗的話清理已分配的資源然後釋放鎖
     freeproc(p);
     release(&p->lock);
     return 0;
   }
 
   // An empty user page table.
+  // 分配 pagetable
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
+    // 失敗的話清理已分配的資源然後釋放鎖
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -147,8 +156,12 @@ found:
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
+  // 初始化清空 context
   memset(&p->context, 0, sizeof(p->context));
+  // ra = forkret（一個在 Kernel/proc.c 的特殊函數）
+  // 新進程第一次被調度時會執行它
   p->context.ra = (uint64)forkret;
+  // 設定 sp 為 kernel stack 的頂端
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
@@ -244,20 +257,28 @@ userinit(void)
   
   // allocate one user page and copy initcode's instructions
   // and data into it.
+  // uvmfirst 是把 initcode 複製到進程的 virt addr 0
   uvmfirst(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
+  // 設定 trapframe （user mode 的起點）
+  // 從地址 0 開始執行
   p->trapframe->epc = 0;      // user program counter
+  // user stack 在頂端
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
+  // 把 p -> name 設為 initcode
   safestrcpy(p->name, "initcode", sizeof(p->name));
+  // 把當前目錄 設為 root
   p->cwd = namei("/");
 
+  // 加入 ready queue
   p->state = RUNNABLE;
   procstatelog(p);
   pushreadylist(p);
 
+  // 釋放鎖
   release(&p->lock);
 }
 
@@ -295,10 +316,12 @@ fork(void)
     return -1;
   }
 
+  // 設定優先級
   np->priority = 149;
   np->statelogenabled = 0;
 
   // Copy user memory from parent to child.
+  // 透過 uvmcpoy 複製 parent process 的記憶體；失敗的話要清理已分配的資源然後釋放鎖
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
@@ -307,17 +330,21 @@ fork(void)
   np->sz = p->sz;
 
   // copy saved user registers.
+  // 複製 trapframe 內容
   *(np->trapframe) = *(p->trapframe);
 
   // Cause fork to return 0 in the child.
+  // 設定 子進程 fork() 返回 0
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
+  // 複製打開的檔案和目錄
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // 複製名稱
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -325,6 +352,7 @@ fork(void)
   release(&np->lock);
 
   acquire(&wait_lock);
+  // 設定父子關係
   np->parent = p;
   release(&wait_lock);
 
@@ -878,6 +906,7 @@ proclistinit(void)
 }
 
 // allocate a proclistnode and return it.
+// NPROCLISTNODE 是 256
 struct proclistnode*
 allocproclistnode(struct proc *p)
 {
@@ -888,9 +917,11 @@ allocproclistnode(struct proc *p)
     acquire(&proclistnodes[i].lock);
     if(proclistnodes[i].used == 0){
       proclistnodes[i].used = 1;
+      // 這個節點裡面徂的進程
       proclistnodes[i].p = p;
       proclistnodes[i].next = 0;
       proclistnodes[i].prev = 0;
+      // 指向節點的指標
       pn = &proclistnodes[i];
     }
     release(&proclistnodes[i].lock);
@@ -1160,9 +1191,11 @@ void
 pushreadylist(struct proc *p)
 {
   struct proclistnode *pn;
+  // 創建一個節點來包裝 process
   if((pn = allocproclistnode(p)) == 0) {
     panic("pushreadylist: allocproclistnode");
   }
+  // 把節點加到 ready list 的尾端
   pushbackproclist(&readylist, pn);
 }
 
