@@ -681,10 +681,12 @@ sleep(void *chan, struct spinlock *lk)
   // so it's okay to release lk.
   // mp2: also need to acquire channel lock
 
+  // 獲得 process 鎖
   acquire(&p->lock);  //DOC: sleeplock1
   if((cn = findchannel(chan)) == 0 && (cn = allocchannel(chan)) == 0) {
     panic("sleep: allocchannel");
   }
+  // 釋放 tickslock
   release(lk);
 
   // Go to sleep.

@@ -317,7 +317,11 @@ kernel/trap.c devintr() 在做
 -  第三種是不認識的中斷
     - 回傳 0 表示不認識的中斷
 
-如果是 timer interrupt 且狀態是 running，則要執行 implicityyield。會去計算這個 process 執行多久，如果大於 1 個 tick，就要讓出 CPU（呼叫 kernel/proc.c `yield()`）
+如果是 timer interrupt 且 process 狀態是 running，則要執行 implicityyield。會去計算這個 process 執行多久，如果大於 1 個 tick，就要讓出 CPU（呼叫 kernel/proc.c `yield()`）
+
+*問題： 為什麼 kerneltrap 中的implicityield 要判斷 process -> state 但 usertrap 卻不需要？*
+
+Ans: 因為 usertrap 發生時，process 的 state 必定是 running；但 kerneltrap 發生在 kernel space，這時可能正在執行 scheduler，它是核心的獨立控制流，因此 myproc() = 0
 
 *一個重要觀念： 為什麼 kerneltrap 只需要保存關鍵暫存器在 stack（本地變數） 上， usertrap 卻是用 trapframe 保存所有狀態?*
 
@@ -380,7 +384,55 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     - 修改狀態為 `RUNNABLE` 並透過 pushreadylist（在 kernel/proc.c 中） 內使用 allocproclist 創建一個節點來包裝 process，再透過 pushbackproclist 放到 ready list 的尾端
 2. `Running` -> `Ready`
 - kerneltrap, usertrap -> yield -> pushreadylist -> sched -> kernel/switch.S:swtch
+
+    `Running` -> `Ready` 這個狀態轉換的原因是因為某個正在被執行的 process 被插隊並移回 Ready Queue，所以這邊的說明可以直接從 usertrap/ kerneltrap 開始
+
+    usertrap: 當 process 在 user space 執行時發生 trap 會執行的處理程序
+
+    kerneltrap: 當 process 在 kernel space 執行時發生 trap 會執行的處理程序
+
+    雖然這兩個處理程序（都在 kernel/trap.c 中）觸發的條件不同，內部的動作也不盡相同，但它們有著相同的主要行為 ——  __透過 `devintr()` 檢查觸發程序的原因__
+    
+    如果發現是 timer interrupt（`devintr()` 回傳 2）（ kerneltrap 會多檢查 `myproc()` 以及 `myproc() -> state`），就會執行 `implicityield()`
+
+    `implicityield()` 檢查 process 是不是執行超過 1 個 ticks 如果是的就執行 `yield()`
+
+    `yield()` 中會做
+    - 取得 process 的鎖
+    - 將 process 狀態改為 `RUNNABLE`（`READY`）
+    - 呼叫 `pushreadylist()` 放入 ready queue
+    - 呼叫 `sched` 會做
+        - 確認是否取得鎖，以及只有一個鎖
+        - 確認狀態是否有修改成功
+        - 確認中斷已關閉，因為上下文切換期間不能被中斷
+        - 透過 intena 保存當前形成的中斷啟用狀態
+        - 透過 swtch （定義在 kernel/swtch.S）儲存當前行程的上下文並切換到 並切換到 CPU 的 scheduler context（在 kernel/proc.h 的 struct cpu 中），使 scheduler 能繼續執行以選擇下一個可執行的行程， `swtch` 做
+            - 保存舊的 context（參數 1）
+            - 載入新的 context (參數 2)
+            - 返回新的 ra (也就是 scheduler 中 swtch 呼叫下一行的位址)
+    - scheduler 會做
+        -  最重要的事情就是 swtch ，假設現在有一個 process A 執行後要做 `yield`，就會做 `swtch` 把自己的 `ra` 存到該 process 的 content，並且把 cpu -> context 的內容重新放回暫存器（其中就包括 scheduler 在 swtch(&c->context, &p->context); 的下一行，這個位址會被放在 `ra`），接著透過 `ret` 回到 scheduler 中，等到 scheduler 重新挑選一個要被執行的 process （ process B ）又會再做一次 `swtch` 把該 process 的 context 放到暫存器中（包含 `ra`）同時把 scheduler 的暫存器值存到 cpu 的 context 中，接著執行 `ret` 就可以順利切換到 process B
+    - 釋放 process 的鎖
 3. `Running` -> `Waiting` (Consider the case of sleep system call)
+- sys_sleep -> sleep -> sched
+
+    這個狀態的轉換是當某個 process 需要等待另一個事件（例如 I/O complete）時所發生的
+    可以直接從 `sys_sleep` （在 kernel/sysproc.c 中）出發
+
+    在 `sys_sleep` 中會
+    - 從 user space 拿到參數（要睡眠多少個 ticks）
+    - 拿到 tickslock 鎖
+    - 紀錄開始時間
+    - while 迴圈在還沒到達睡眠時間且 process 沒被殺死時
+        - 會持續 `sleep(&ticks, &tickslock)` （在 kernel/proc.c 中）在 ticks channel 中睡眠，等待 `wakeup(&ticks)` 喚醒
+        - `sleep` 會
+            - 取得 prcoess 鎖，釋放 sleep 參數中傳入的鎖
+            - 找到或創建一個 channel 結構來管理等待這個通道的 process
+            - 記錄在哪個 channel 睡眠並改變狀態（`RUNNING` -> `SLEEPING`）
+            - 把 process 透過 `allocproclistnode` 包裝成 node 並加入 channel 尾端
+            - 呼叫 `sched()`，這時候會把 ra 設為下一行的 p -> chan = 0; 當 process 重新取得 CPU 會從這邊開始執行
+            - p -> chan = 0 是讓這個 process 不再屬於該 channel
+    - 解開 tickslock 鎖
 4. `Waiting` -> `Ready`
 5. `Running` -> `Terminated`
 6. `Ready` -> `Running`
