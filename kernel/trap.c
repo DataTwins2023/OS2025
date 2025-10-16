@@ -135,6 +135,9 @@ void
 kerneltrap()
 {
   int which_dev = 0;
+  // 一開始保存
+  // 這邊可能切換進程
+  // sepc 可能被改變
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
@@ -165,6 +168,7 @@ clockintr()
 {
   acquire(&tickslock);
   ticks++;
+  // 實作在 kernel/proc.c
   wakeup(&ticks);
   release(&tickslock);
 }
@@ -179,16 +183,19 @@ devintr()
 {
   uint64 scause = r_scause();
 
+  // 外部裝置中斷
   if((scause & 0x8000000000000000L) &&
      (scause & 0xff) == 9){
     // this is a supervisor external interrupt, via PLIC.
 
     // irq indicates which device interrupted.
+    // 問 plic 是哪個裝置中斷
     int irq = plic_claim();
 
+    // 鍵盤 / 串口
     if(irq == UART0_IRQ){
       uartintr();
-    } else if(irq == VIRTIO0_IRQ){
+    } else if(irq == VIRTIO0_IRQ){ // 磁碟
       virtio_disk_intr();
     } else if(irq){
       printf("unexpected interrupt irq=%d\n", irq);

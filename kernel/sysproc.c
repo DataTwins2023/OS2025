@@ -77,16 +77,23 @@ sys_sleep(void)
   int n;
   uint ticks0;
 
+  // 從 user space 拿到參數（要睡眠多少個 ticks）
   argint(0, &n);
   if(n < 0)
     n = 0;
+  // 拿到鎖
   acquire(&tickslock);
+  // 紀錄開始時間
   ticks0 = ticks;
+  // 當還沒睡夠時間，且行程沒被殺死
   while(ticks - ticks0 < n){
     if(killed(myproc())){
       release(&tickslock);
       return -1;
     }
+    // 進入睡眠
+    // 在 ticks 這個 channel 睡眠
+    // 等待 wakeup(&ticks) 喚醒
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);

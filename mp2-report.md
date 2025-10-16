@@ -10,9 +10,9 @@
 
 ## Trace Code
 
-### 1. Setup timer interrupt
+### 1-1. Setup timer interrupt
 這可以從系統啟動會執行的 kernel/start.c 開始說明。
-在系統一開始啟動時，透過 kernel/kernel.ld 告訴 CPU 要從 _entry 符號開始執行
+在系統一開始啟動時，透過 kernel/kernel.ld 告訴 CPU 要從 `_entry` 符號開始執行
 
 ```c
 OUTPUT_ARCH( "riscv" )
@@ -25,7 +25,7 @@ SECTIONS
 }
 ```
 
-而 _entry 定義在 kernel/entry.S 中，它會做一系列動作然後 call start() 函數
+而 _entry 定義在 kernel/entry.S 中，它會做一系列動作然後 call `start()` 函數
 ```c
 ...
 .global _entry
@@ -96,9 +96,12 @@ w_pmpcfg0(0xf);
     *(uint64*)CLINT_MTIMECMP(id) = *(uint64*)CLINT_MTIME + interval;
     ```
     c. 準備 scratch 給 中斷處理函數 timervec 使用， scratch 結構
-        - scratch[0..2]：用於保存暫存器（a1, a2, a3）
-        - scratch[3]：儲存 CLINT_MTIMECMP 的地址
-        - scratch[4]：儲存 interval（中斷間隔時間）
+
+    - scratch[0..2]：用於保存暫存器（a1, a2, a3）
+
+    - scratch[3]：儲存 CLINT_MTIMECMP 的地址
+
+    - scratch[4]：儲存 interval（中斷間隔時間）
     ```c
     uint64 *scratch = &timer_scratch[id][0];
     scratch[3] = CLINT_MTIMECMP(id);
@@ -108,7 +111,8 @@ w_pmpcfg0(0xf);
     ```c
     w_mscratch((uint64)scratch);
     ```
-    e. 透過 w_mtvec 設定中斷處理函數 timervec，中斷發生時會跳到這裡執行。因為 xv6 中，M-mode 只處理時鐘中斷，所以可以這樣設定  
+    e. 透過 w_mtvec 設定中斷處理函數 timervec，中斷發生時會跳到這裡執行。
+因為 xv6 中，M-mode 只處理時鐘中斷，所以可以這樣設定  
     ```c
     w_mtvec((uint64)timervec);
     ``` 
@@ -130,7 +134,7 @@ w_pmpcfg0(0xf);
         - xv6 沒有直接使用
         
         所以需要設定 mtvec register
-    - kernel/kernel.S 的 timervec 在做什麼
+    - kernel/kernelvec.S 的 timervec 在做什麼
 
         Ⅰ. 使用 scratch 做
         -
@@ -179,15 +183,256 @@ w_pmpcfg0(0xf);
     ```
 7. 紀錄 CPU 編號到 tp register
 
-- r_mhartid() 只能在 M-mode 使用
-- 在多核心系統中，所有 CPU 都會執行 start() 函數
-- 這樣每個 CPU 都會把自己的 ID 存到 tp
-```c
-int id = r_mhartid();
-w_tp(id);
-```
+    a. r_mhartid() 只能在 M-mode 使用
+    
+    b. 在多核心系統中，所有 CPU 都會執行 start() 函數
+    
+    c. 這樣每個 CPU 都會把自己的 ID 存到 tp
+    ```c
+    int id = r_mhartid();
+    w_tp(id);
+    ```
 8. 透過 mret 指令回到 S-mode 並呼叫 main function
 ```c
 asm volatile("mret");
 ```
+
+
+
+### 1-2. User space interrupt handler
+當在 user space 時發生 timer interrupt
+會依據 kernel/start.c 中 `timerinit()` 的
+```c
+w_mtvec((uint64)timervec)
+```
+跳到 kernel/kernelvec.s 中的 `timervec`，其中透過
+```c
+# arrange for a supervisor software interrupt
+# after this handler returns.
+li a1, 2
+csrw sip, a1
+```
+設置 sip 中的 SSIP bit 標記一個 S-mode 軟體中斷待處理
+之後透過 mret 回到之前的模式（user space）
+CPU 檢測到 sip 有 pending interrupt
+這個 S-mode 的軟體中斷會因為 kernel/trap.c 中的 `usertrapret()`
+```c
+w_stvec(trampoline_uservec);
+```
+跳到 kernel/trampoline.S 的 `uservec` 段落執行，在這個段落中
+```c
+# jump to usertrap(), which does not return
+jr t0
+```
+會跳到 kernel/trap.c/usertrap()
+
+過程中會透過 `devintr()` 知道這是哪一個設備發出的 interrupt 並放到 which_dev
+
+kernel/trap.c devintr() 在做
+-  讀取中斷原因
+-  第一種是外部裝置中斷
+    - 透過 plic 知道是哪個裝置中斷
+    - 依據裝置呼叫對應的處理函數
+    - 回傳 1 表示裝置中斷
+-  第二種是軟體中斷（從 M-mode 來的），也就是我們要的
+    - 處理實際的 timer interrupt 處理 - kernel/trap.c clockintr()（只讓 cpuid 0 的處理器處理）
+        - 取得鎖
+        - 更新全域時間 ticks++
+        - wake up 某個 channel 所有等待時間到的 process
+        - 會先檢查，不能 wakeup 自己，被 wakeup 的 process 狀態要是 sleeping 且屬於該 channel
+        - 把狀態改為 RUNNABLE 並加入對應的 ready queue（按照 priority）
+        - 釋放鎖
+    - 清除軟體中斷的 pending bit
+    - 回傳 2 表示 timer intrrupt
+-  第三種是不認識的中斷
+    - 回傳 0 表示不認識的中斷
+
+接著就是上次 mp1 的過程，要注意的是到 line 80 時
+```c
+// give up the CPU if this is a timer interrupt.
+if(which_dev == 2)
+implicityield();
+```
+如果發現是 timer 產生的 interrupt 就會做 `implicityield()`，這是在 kernel/proc.c 中
+```c
+// Implicit yield is called on timer interrupt
+void
+implicityield(void)
+{
+  struct proc *p = myproc();
+  if(ticks - p->startrunningticks >= 1) {
+    // yield round robin scheduling
+    // actually ticks - p->startrunningticks should be 1
+    yield();
+  }
+}
+```
+會去計算這個 process 執行多久，如果大於 1 個 tick，就要讓出 CPU（呼叫 kernel/proc.c yield()）
+```c
+// Give up the CPU for one scheduling round.
+void
+yield(void)
+{
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->state = RUNNABLE;
+  procstatelog(p);
+  pushreadylist(p);
+  sched();
+  release(&p->lock);
+}
+```
+目前 process 的狀態從 RUNNING -> RUNNABLE，放回 ready queue 並呼叫 `sched()` 切換回 scheduler context，Scheduler 會選擇下一個進程執行
+
+
+
+### 1-3. Kernel space interrupt handler
+在 kernel/trap.c `usertrap()` 中會先把 stvec 設置為 kernel/kernelvec.S kenrelvec 的位址（因為已經進入 kernel mode，這時候如果遇到 trap 應該要跳到 kernel/trap.c 中的 kernelvec 而非 trampoline.S 中的uservec）
+```c
+w_stvec((uint64)kernelvec);
+```
+所以當 kernel space 中發生 timer interrupt， CPU 會自動跳到 kernel/kernelvec.S kernelvec，並依照
+```c
+# call the C trap handler in trap.c
+call kerneltrap
+```
+跳到 kerneltrap（在 kernel/trap.c 中）
+kerneltrap 一樣會透過 kernel/trap.c 中的 `devintr()` 判斷中斷類型
+kernel/trap.c devintr() 在做
+-  讀取中斷原因
+-  第一種是外部裝置中斷
+    - 透過 plic 知道是哪個裝置中斷
+    - 依據裝置呼叫對應的處理函數
+    - 回傳 1 表示裝置中斷
+-  第二種是軟體中斷（從 M-mode 來的），也就是我們要的
+    - 處理實際的 timer interrupt 處理 - kernel/trap.c clockintr()（只讓 cpuid 0 的處理器處理）
+        - 取得鎖
+        - 更新全域時間 ticks++
+        - wake up 某個 channel 所有等待時間到的 process
+        - 會先檢查，不能 wakeup 自己，被 wakeup 的 process 狀態要是 sleeping 且屬於該 channel
+        - 把狀態改為 RUNNABLE 並加入對應的 ready queue（按照 priority）
+        - 釋放鎖
+    - 清除軟體中斷的 pending bit
+    - 回傳 2 表示 timer intrrupt
+-  第三種是不認識的中斷
+    - 回傳 0 表示不認識的中斷
+
+如果是 timer interrupt 且 process 狀態是 running，則要執行 implicityyield。會去計算這個 process 執行多久，如果大於 1 個 tick，就要讓出 CPU（呼叫 kernel/proc.c `yield()`）
+
+*問題： 為什麼 kerneltrap 中的implicityield 要判斷 process -> state 但 usertrap 卻不需要？*
+
+Ans: 因為 usertrap 發生時，process 的 state 必定是 running；但 kerneltrap 發生在 kernel space，這時可能正在執行 scheduler，它是核心的獨立控制流，因此 myproc() = 0
+
+*一個重要觀念： 為什麼 kerneltrap 只需要保存關鍵暫存器在 stack（本地變數） 上， usertrap 卻是用 trapframe 保存所有狀態?*
+
+Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user 的暫存器值會被破壞，所以需要完整保存。但 kerneltrap 發生時 mode 不會改變，可以把重要的暫存器直接存在 stack 上
+
+### 2. Mapping relationship
+| xv6 | lecture notes | Definition|
+| -------- | -------- | -------- |
+| `UNUSED`     |  `X`    | This process slot is not in use; it can be allocated for a new process. |
+| `USED` | `New` | The slot has been allocated but the process is not yet runnable, e.g., just created. |
+| `SLEEPING` | `Waiting` | The process is blocked, waiting for an event to occur. |
+| `RUNABLE` | `Ready` | The process is ready to run and waiting for CPU scheduling. |
+| `RUNNING` | `Running` | The process is currently executing on the CPU. |
+| `ZOMBIE` | `Terminated` | The process has finished execution but has not yet been reaped by its parent. |
+
+
+### 3. Explain what each functions in the state transition function path
+1. `New` -> `Ready`
+- userinit -> allocproc -> pushreadylist
+
+    這個路徑描述的是系統啟動時創建第一個 user process 的過程。當系統啟動呼叫完 kernel/start.c 後，透過 mret 會跑到 kernel/main.c main()，其中 line 32 會做 userinit（在 kernel/proc.c 中）
+
+    userinit 做
+    - 透過 allocproc 分配進程，把這個進程保存到全域變數 `initproc`（這是系統第一個進程，之後會成為所有「孤兒進程」的養父）
+        
+        allocproc 做
+        - 找到 proc[] 陣列中 state == `UNUSED` 的 slot，如果找不到就返回 0，找到的話就跳去 found；在檢查每個 proc[] 元素時，需要上鎖以防止多個 CPU 同時選到同一個 slot
+        - found 中會透過 kernel/proc.c 的 `allocpid` 分配 process ID，並且修改狀態
+        - 呼叫 kalloc 分配一個 page 用來存放 trapframe；失敗的話要清理已分配的資源然後釋放鎖
+        - 分配一個 pagetabl；失敗的話要清理已分配的資源然後釋放鎖
+        - 初始化並清空 context
+        - 設定 context.ra ，這邊設為 `forkret` （一個在 Kernel/proc.c 的特殊函數）新進程第一次被調度時會執行它
+        - 設定 context.sp 為 kernel stack 的頂端 （因為 context 是給 kernel mode 使用的 context 的 sp = kernel stack，trapframe 才是給 user mode 使用，所以 trapframe 的 sp = user stack）
+
+    - 透握 uvmfirst 載入 initcode 到進程的 virtual addr 0
+    - 設定 trapframe 的 epc 跟 sp（user stack）這邊都是虛擬地址
+    - 把 p -> name 設為 initcode
+    - 把當前目錄設為 root
+    - 修改狀態為 `RUNNABLE` 並透過 pushreadylist（在 kernel/proc.c 中） 內使用 allocproclist 創建一個節點來包裝 process，再透過 pushbackproclist 放到 ready list 的尾端
+        allocproclist 做
+        - 把 process 包裝成一個 node
+        - 這樣做的好處是一個 process 可以包裝成多個 node 放在不同的 list ，這樣就可以指向多個 next, prev
+        - 因為只是打包成 node ，所以 next 及 prev 都不會在這邊設定，會等到 pushbackproclist 才設定
+    - 釋放鎖
+
+- fork or priorfork -> allocproc -> pushreadylist
+
+    和前面的過程比較，發現只差在第一個步驟。前面是系統啟動創建的第一個 process ，後面則是正常透過 fork/ priorfork （都在 kernel/proc.c 中）創建 process
+
+    在 fork 內會做
+    - 透過 allocproc 分配新的 process（allocproc 做的事情在上面已經有說明）
+    - 設定優先級
+    - 透過 uvmcpoy 複製 parent process 的記憶體；失敗的話要清理已分配的資源然後釋放鎖
+    - 複製 trapframe 內容
+    - 設定 子進程 fork() 返回 0
+    - 複製打開的檔案（實際上就是讓父子共享同一個檔案，增加檔案的引用技術）
+    - 複製父進程的當前目錄 為 子進程的當前目錄（實際上就是讓父子共享同一個目錄）
+    - 複製名稱
+    - 設定父子關係
+    - 修改狀態為 `RUNNABLE` 並透過 pushreadylist（在 kernel/proc.c 中） 內使用 allocproclist 創建一個節點來包裝 process，再透過 pushbackproclist 放到 ready list 的尾端
+2. `Running` -> `Ready`
+- kerneltrap, usertrap -> yield -> pushreadylist -> sched -> kernel/switch.S:swtch
+
+    `Running` -> `Ready` 這個狀態轉換的原因是因為某個正在被執行的 process 被插隊並移回 Ready Queue，所以這邊的說明可以直接從 usertrap/ kerneltrap 開始
+
+    usertrap: 當 process 在 user space 執行時發生 trap 會執行的處理程序
+
+    kerneltrap: 當 process 在 kernel space 執行時發生 trap 會執行的處理程序
+
+    雖然這兩個處理程序（都在 kernel/trap.c 中）觸發的條件不同，內部的動作也不盡相同，但它們有著相同的主要行為 ——  __透過 `devintr()` 檢查觸發程序的原因__
     
+    如果發現是 timer interrupt（`devintr()` 回傳 2）（ kerneltrap 會多檢查 `myproc()` 以及 `myproc() -> state`），就會執行 `implicityield()`
+
+    `implicityield()` 檢查 process 是不是執行超過 1 個 ticks 如果是的就執行 `yield()`
+
+    `yield()` 中會做
+    - 取得 process 的鎖
+    - 將 process 狀態改為 `RUNNABLE`（`READY`）
+    - 呼叫 `pushreadylist()` 放入 ready queue
+    - 呼叫 `sched` 會做
+        - 確認是否取得鎖，以及只有一個鎖
+        - 確認狀態是否有修改成功
+        - 確認中斷已關閉，因為上下文切換期間不能被中斷
+        - 透過 intena 保存當前形成的中斷啟用狀態
+        - 透過 swtch （定義在 kernel/swtch.S）儲存當前行程的上下文並切換到 並切換到 CPU 的 scheduler context（在 kernel/proc.h 的 struct cpu 中），使 scheduler 能繼續執行以選擇下一個可執行的行程， `swtch` 做
+            - 保存舊的 context（參數 1）
+            - 載入新的 context (參數 2)
+            - 返回新的 ra (也就是 scheduler 中 swtch 呼叫下一行的位址)
+    - scheduler 會做
+        -  最重要的事情就是 swtch ，假設現在有一個 process A 執行後要做 `yield`，就會做 `swtch` 把自己的 `ra` 存到該 process 的 content，並且把 cpu -> context 的內容重新放回暫存器（其中就包括 scheduler 在 swtch(&c->context, &p->context); 的下一行，這個位址會被放在 `ra`），接著透過 `ret` 回到 scheduler 中，等到 scheduler 重新挑選一個要被執行的 process （ process B ）又會再做一次 `swtch` 把該 process 的 context 放到暫存器中（包含 `ra`）同時把 scheduler 的暫存器值存到 cpu 的 context 中，接著執行 `ret` 就可以順利切換到 process B
+    - 釋放 process 的鎖
+3. `Running` -> `Waiting` (Consider the case of sleep system call)
+- sys_sleep -> sleep -> sched
+
+    這個狀態的轉換是當某個 process 需要等待另一個事件（例如 I/O complete）時所發生的
+    可以直接從 `sys_sleep` （在 kernel/sysproc.c 中）出發
+
+    在 `sys_sleep` 中會
+    - 從 user space 拿到參數（要睡眠多少個 ticks）
+    - 拿到 tickslock 鎖
+    - 紀錄開始時間
+    - while 迴圈在還沒到達睡眠時間且 process 沒被殺死時
+        - 會持續 `sleep(&ticks, &tickslock)` （在 kernel/proc.c 中）在 ticks channel 中睡眠，等待 `wakeup(&ticks)` 喚醒
+        - `sleep` 會
+            - 取得 prcoess 鎖，釋放 sleep 參數中傳入的鎖
+            - 找到或創建一個 channel 結構來管理等待這個通道的 process
+            - 記錄在哪個 channel 睡眠並改變狀態（`RUNNING` -> `SLEEPING`）
+            - 把 process 透過 `allocproclistnode` 包裝成 node 並加入 channel 尾端
+            - 呼叫 `sched()`，這時候會把 ra 設為下一行的 p -> chan = 0; 當 process 重新取得 CPU 會從這邊開始執行
+            - p -> chan = 0 是讓這個 process 不再屬於該 channel
+    - 解開 tickslock 鎖
+4. `Waiting` -> `Ready`
+5. `Running` -> `Terminated`
+6. `Ready` -> `Running`
