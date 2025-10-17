@@ -345,15 +345,15 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     這個路徑描述的是系統啟動時創建第一個 user process 的過程。當系統啟動呼叫完 kernel/start.c 後，透過 mret 會跑到 kernel/main.c main()，其中 line 32 會做 userinit（在 kernel/proc.c 中）
 
     userinit 做
-    - 透過 allocproc 分配進程，把這個進程保存到全域變數 `initproc`（這是系統第一個進程，之後會成為所有「孤兒進程」的養父）
+    - 透過 allocproc 分配進程，把這個 process 保存到全域變數 `initproc`（這是系統第一個進程，之後會成為所有「孤兒進程」的養父）
         
         allocproc 做
         - 找到 proc[] 陣列中 state == `UNUSED` 的 slot，如果找不到就返回 0，找到的話就跳去 found；在檢查每個 proc[] 元素時，需要上鎖以防止多個 CPU 同時選到同一個 slot
         - found 中會透過 kernel/proc.c 的 `allocpid` 分配 process ID，並且修改狀態
         - 呼叫 kalloc 分配一個 page 用來存放 trapframe；失敗的話要清理已分配的資源然後釋放鎖
-        - 分配一個 pagetabl；失敗的話要清理已分配的資源然後釋放鎖
+        - 分配一個 pagetable；失敗的話要清理已分配的資源然後釋放鎖
         - 初始化並清空 context
-        - 設定 context.ra ，這邊設為 `forkret` （一個在 Kernel/proc.c 的特殊函數）新進程第一次被調度時會執行它
+        - 設定 context.ra ，這邊設為 `forkret` （一個在 Kernel/proc.c 的特殊函數）新 process 第一次被調度時會執行它
         - 設定 context.sp 為 kernel stack 的頂端 （因為 context 是給 kernel mode 使用的 context 的 sp = kernel stack，trapframe 才是給 user mode 使用，所以 trapframe 的 sp = user stack）
 
     - 透握 uvmfirst 載入 initcode 到進程的 virtual addr 0
@@ -361,11 +361,14 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     - 把 p -> name 設為 initcode
     - 把當前目錄設為 root
     - 修改狀態為 `RUNNABLE` 並透過 pushreadylist（在 kernel/proc.c 中） 內使用 allocproclist 創建一個節點來包裝 process，再透過 pushbackproclist 放到 ready list 的尾端
+        
         allocproclist 做
         - 把 process 包裝成一個 node
         - 這樣做的好處是一個 process 可以包裝成多個 node 放在不同的 list ，這樣就可以指向多個 next, prev
         - 因為只是打包成 node ，所以 next 及 prev 都不會在這邊設定，會等到 pushbackproclist 才設定
-    - 釋放鎖
+
+        pushbackproclist 就是把打包好的 node 加入 proclist 這個 Doubly Circular Linked List 的尾端
+    - 釋放鎖，這個鎖應該是從 allocproc 得到的
 
 - fork or priorfork -> allocproc -> pushreadylist
 
@@ -377,15 +380,24 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     - 透過 uvmcpoy 複製 parent process 的記憶體；失敗的話要清理已分配的資源然後釋放鎖
     - 複製 trapframe 內容
     - 設定 子進程 fork() 返回 0
-    - 複製打開的檔案（實際上就是讓父子共享同一個檔案，增加檔案的引用技術）
+    - 複製打開的檔案（實際上就是讓父子共享同一個檔案，增加檔案的引用計數）
+        - 這邊的重要概念是，透過引用計數，可以避免 dangling pointer。 如果直接讓 child process 透過一個指標指向 parent process 本來就指向的檔案，但如果 child close 並釋放記憶體，那 parent 指向該檔案的指標就變成 dangling 了，所以透過計數可以讓檔案資源只有在計數為 0 時釋放
     - 複製父進程的當前目錄 為 子進程的當前目錄（實際上就是讓父子共享同一個目錄）
     - 複製名稱
     - 設定父子關係
     - 修改狀態為 `RUNNABLE` 並透過 pushreadylist（在 kernel/proc.c 中） 內使用 allocproclist 創建一個節點來包裝 process，再透過 pushbackproclist 放到 ready list 的尾端
+
+    priorityfork 只是可以設定優先級和 log 的方式
 2. `Running` -> `Ready`
 - kerneltrap, usertrap -> yield -> pushreadylist -> sched -> kernel/switch.S:swtch
 
-    `Running` -> `Ready` 這個狀態轉換的原因是因為某個正在被執行的 process 被插隊並移回 Ready Queue，所以這邊的說明可以直接從 usertrap/ kerneltrap 開始
+    `Running` -> `Ready` 這個狀態轉換的原因是因為某個正在被執行的 process 需要讓出 CPU 時,
+    主要原因包括:
+    - Timer interrupt (時間片用完)
+    - 被高優先級 process preempt (搶佔)
+    - 主動呼叫 yield
+
+    Process 會被移回 Ready Queue 等待下次被 scheduler 選中。所以這邊的說明可以直接從 usertrap/ kerneltrap 開始。
 
     usertrap: 當 process 在 user space 執行時發生 trap 會執行的處理程序
 
@@ -401,17 +413,31 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     - 取得 process 的鎖
     - 將 process 狀態改為 `RUNNABLE`（`READY`）
     - 呼叫 `pushreadylist()` 放入 ready queue
-    - 呼叫 `sched` 會做
+    - 呼叫 `sched`（在 kernel/proc.c 中） 會做
         - 確認是否取得鎖，以及只有一個鎖
         - 確認狀態是否有修改成功
         - 確認中斷已關閉，因為上下文切換期間不能被中斷
         - 透過 intena 保存當前形成的中斷啟用狀態
-        - 透過 swtch （定義在 kernel/swtch.S）儲存當前行程的上下文並切換到 並切換到 CPU 的 scheduler context（在 kernel/proc.h 的 struct cpu 中），使 scheduler 能繼續執行以選擇下一個可執行的行程， `swtch` 做
+        - 透過 swtch （定義在 kernel/swtch.S）儲存當前行程的上下文 並切換到 CPU 的 scheduler context（在 kernel/proc.h 的 struct cpu 中），使 scheduler 能繼續執行以選擇下一個可執行的行程， `swtch` 做
             - 保存舊的 context（參數 1）
             - 載入新的 context (參數 2)
             - 返回新的 ra (也就是 scheduler 中 swtch 呼叫下一行的位址)
-    - scheduler 會做
-        -  最重要的事情就是 swtch ，假設現在有一個 process A 執行後要做 `yield`，就會做 `swtch` 把自己的 `ra` 存到該 process 的 content，並且把 cpu -> context 的內容重新放回暫存器（其中就包括 scheduler 在 swtch(&c->context, &p->context); 的下一行，這個位址會被放在 `ra`），接著透過 `ret` 回到 scheduler 中，等到 scheduler 重新挑選一個要被執行的 process （ process B ）又會再做一次 `swtch` 把該 process 的 context 放到暫存器中（包含 `ra`）同時把 scheduler 的暫存器值存到 cpu 的 context 中，接著執行 `ret` 就可以順利切換到 process B
+                - scheduler 會做（但現在的 kernel/proc.c `scheduler` 好像少了 swtch 這一段）
+                    -  最重要的事情就是 swtch （這是在 sched 中的），假設現在有一個 process A 執行後要做 `yield`，就會做 `swtch` ，這時會：
+                        1. 把當下 process A 的暫存器 `ra` （包括 `ra`、`sp`、`s0-s11`）存到該 process 的 context
+
+                        2. 把 cpu -> context 的內容重新載入暫存器（其中就包括 scheduler 之前呼叫 swtch(&c->context, &p->context) 時的下一行位址，這個位址會被放在 `ra`）
+
+                        3. 接著透過 `ret` 回到 scheduler 中
+
+                    - 等到 scheduler 重新挑選一個要被執行的 process （ process B ）又會再做一次 `swtch` （schdeuler 中的）
+
+                        1. 把 process B 的 context 放到暫存器中（包含之前保存 `ra`）
+
+                        2. 把 scheduler 的暫存器值存到 cpu 的 context 中
+                        
+                        3. 接著執行 `ret` 就可以順利切換到 process B
+        - 當 process 再次被 scheduler 選中，會回到 mycpu()->intena = intena; 恢復 intena
     - 釋放 process 的鎖
 3. `Running` -> `Waiting` (Consider the case of sleep system call)
 - sys_sleep -> sleep -> sched
@@ -430,69 +456,108 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
             - 找到或創建一個 channel 結構來管理等待這個通道的 process
             - 記錄在哪個 channel 睡眠並改變狀態（`RUNNING` -> `SLEEPING`）
             - 把 process 透過 `allocproclistnode` 包裝成 node 並加入 channel 尾端
-            - 呼叫 `sched()`，這時候會把 ra 設為下一行的 p -> chan = 0; 當 process 重新取得 CPU 會從這邊開始執行
+            - 呼叫 `sched()`，這時候 ra 是下一行的 p -> chan = 0; 當 process 重新取得 CPU 會從這邊開始執行
+                - 進入 `sched()` 後會切換到 scheduler 選擇下一個要執行的 process
+                - 之後回到這個 process 就會執行 p -> chan = 0
             - p -> chan = 0 是讓這個 process 不再屬於該 channel
     - 解開 tickslock 鎖
 4. `Waiting` -> `Ready`  
-    <span style="color:red">
-    可能要再加上clockintr()在幹嘛以及是誰call wakeup(), swtch() 也沒有在過程中有提到 需要再確認 
-    </span>
-    - clockintr -> wakeup
-    - 接續上面的過程，當這個process經歷從 `Running` 到 `Waiting` 狀態轉換，此時此process在`ticks channel`上有一個node 表示因為clock interrupt的原因而進到`SLEEPING`的狀態
-    - 當sleep時間已達到傳入的ticks時，會執行`wakeup(&ticks)`
-    - `wakeup(&ticks)`會  
-        - 利用傳入的*chan參數(這裡是&ticks)透過`findchannel(chan)`找到對應的channel，如果沒找到則直接return
-        - `while((pn = popfrontproclist(&cn->pl)) != 0)`迴圈會把channel上所有的waiting processes node 釋放掉並喚醒  
-        - 在`while`迴圈中
-            - `p = pn->p`: 取得channel中front節點的process
-            - `freeproclistnode(pn)`: 從channel釋放掉front節點
-            - 在喚醒這個process之前先檢查喚醒是否合法，其中包含: 
-              - running proc不能wakeup自己
-              - 只能wakeup處於`SLEEPING`狀態的process
-              - 預wakeup的process處於正確的channel
+- `clockintr` -> `wakeup`
+
+    狀態轉換的時機是，當 process 等待的事件發生時 (例如: sleep 時間到、I/O 完成等)
+
+    但這邊提到的 `clockintr` 是在 timer interrupt 情況下會觸發的 funtcion
+    
+    `clockintr` 中會
+    - 增加 ticks
+    - `wakeup(&ticks)` （實作在 kernel/proc.c）
+        - &ticks 是全域變數 ticks 的記憶體位址，在這邊的用法是透過「記憶體位址」來標識「等待的是哪個事件」，也把它視為一個 channel
+        - wakeup 就會去喚醒所有在等待這個事件的 process
+        - wakeup 中會做
+            - 利用傳入的*chan參數(這裡是&ticks)透過`findchannel(chan)`找到對應的 channel ，如果沒找到則直接 return
+            - `while((pn = popfrontproclist(&cn->pl)) != 0)` 迴圈會從佇列前端彈出一個 node 直到空了
+            - 在`while`迴圈中
+                - `p = pn->p`: 取得 node 的process
+                - `freeproclistnode(pn)`: 釋放 node 的記憶體
+                - 在喚醒這個process之前先檢查喚醒是否合法，其中包含: 
+                    - running proc 不能 wakeup 自己
+                    - 只能 wakeup 處於 `SLEEPING` 狀態的 process
+                    - 要 wakeup 的 process 處於正確的 channel
             - 上面三個檢查通過後即更新 p->state = RUNNABLE
-            - `procstatelog(p);`: 紀錄程序轉換的日誌
-            - `pushreadylist(p);`: 將此process push到ready queue，後續等待schedular安排是否要讓它`Running`
-            - 作後釋放這個process的lock，即完成這個process的喚醒
-        當channel全部的節點的processes都被喚醒後  
-        做`cn->used = 0;`: 更新channel的狀態為 <span style="color:green">未被使用</span>
+            - `procstatelog(p);` : 紀錄程序轉換的日誌
+            - `pushreadylist(p);` : 將此process push到ready queue，後續等待schedular安排是否要讓它`Running`
+            - 最後釋放這個 process 的lock，即完成這個 process 的喚醒
+            - 當channel全部的節點的processes都被喚醒後做 `cn->used = 0;` 標記這個 channel 沒在使用
+        - 這邊有一點需要注意，如果每次都會 wakeup 全部等待 ticks 事件的 process ，那就代表不管 process 要 sleep 幾秒，都會被 wakup 變成 `RUNNABLE`，但後續 `sys_sleep` 中有透過其他機制強迫還沒到等待時間的 process 繼續 sleep 
+
+        
 5. `Running` -> `Terminated`
-   - sys_exit -> exit -> sched
-   - `sys_exit`(kernel/sysproc.c): 當running的user process要terminate時呼叫的system call 
-```c
-uint64
-sys_exit(void)
-{
-  int n;
-  argint(0, &n);
-  exit(n); // 在這邊呼叫kernel的exit(n) 並把從user space取得的參數傳入 
-  return 0;  // not reached
-}
-```
-  - `exit`(kernel/proc.c): 為kernel中處理running process要terminate的程式碼
+- sys_exit -> exit -> sched
+   - `sys_exit`(kernel/sysproc.c): 當 running 的 user process 要 terminate 時呼叫的 system call 
     ```c
-    struct proc *p = myproc(); //首先取得正在running的process
-    //一開始先檢查目前正在跑的process是否為初始程序(initproc) 
-    //初始程序不能exit 否則會產生孤兒程序無法被妥善處理
+    uint64
+    sys_exit(void)
+    {
+    int n;
+    argint(0, &n);
+    exit(n); // 在這邊呼叫 kernel 的exit(n) 並把從 user space 取得的參數傳入 
+    return 0;  // not reached
+    }
+    ```
+    - `exit`(kernel/proc.c): 為 kernel 中處理 running process 要 terminate 的程式碼
+    ```c
+    struct proc *p = myproc(); //首先取得正在 running 的 process
+    // 一開始先檢查目前正在跑的 process 是否為初始程序(initproc) 
+    // 初始程序不能 exit 否則會產生孤兒程序無法被妥善處理
     if(p == initproc)
         panic("init exiting");
-
     ```
-    - 接著處理預terminate process的檔案資源釋放，包含:  
-      - 關閉所有相關的open files
-      - 將process的CWD的inode的reference count減一 
-    - 處理與其child processes與parent process的關係，包含:  
-      - `reparent(p);`: 將所有其child processes變成init process  
-      - `wakeup(p->parent);`: Parent 可能處於wait()的sleep 喚醒它  
+    - 接著處理預 terminate process 的檔案資源釋放，包含:  
+      - 關閉所有相關的 open files
+      - 將 process CWD 的 inode reference count 減一 
+    - 處理與其 child processes 以及 parent process 的關係，包含:  
+      - `reparent(p);`: 將所有其 child processes 的 parent 變成 initproc  
+      - `wakeup(p->parent);`: Parent 可能處於 wait() 的 sleep 喚醒它  
+        - ticky 的點是 wakeup 是要喚醒等待某個事件發生的 process，而 parent 就待在「自己的位址」這個 channel 上
+    - xstate 是退出狀態碼，讓 parent 知道 child 是「正常結束」還是「出錯結束」
     - 更新此process的狀態
-```c
-  p->xstate = status; // 更新exit state 之後會成為return value回傳到user space 
-  p->state = ZOMBIE; // 更新process state為 ZOMBIE
-  procstatelog(p); //將更新紀錄於日誌中
-  ...
-  sched(); //跳到scheduler 一般情況下不會再返回
-  panic("zombie exit");//若意外返回系統進入panic
-```
- - `sched`:
-   -   
-1. `Ready` -> `Running`
+    
+    ```c
+    p->xstate = status; // 更新exit state 之後會成為return value回傳到user space 
+    p->state = ZOMBIE; // 更新process state為 ZOMBIE
+    procstatelog(p); //將更新紀錄於日誌中
+    ...
+    sched(); //跳到scheduler 一般情況下不會再返回
+    panic("zombie exit");//若意外返回系統進入panic
+    ```
+    - `sched`:
+        - 確認是否取得鎖，以及只有一個鎖
+        - 確認狀態是否有修改成功
+        - 確認中斷已關閉，因為上下文切換期間不能被中斷
+        - 透過 intena 保存當前形成的中斷啟用狀態
+        - 透過 swtch （定義在 kernel/swtch.S）儲存當前行程的上下文 並切換到 CPU 的 scheduler context（在 kernel/proc.h 的 struct cpu 中），使 scheduler 能繼續執行以選擇下一個可執行的行程， `swtch` 做
+            - 保存舊的 context（參數 1）
+            - 載入新的 context (參數 2)
+            - 返回新的 ra (也就是 scheduler 中 swtch 呼叫下一行的位址)
+                - scheduler 會做（但現在的 kernel/proc.c `scheduler` 好像少了 swtch 這一段）
+                    -  最重要的事情就是 swtch （這是在 sched 中的），假設現在有一個 process A 執行後要做 `yield`，就會做 `swtch` ，這時會：
+                        1. 把當下 process A 的暫存器 `ra` （包括 `ra`、`sp`、`s0-s11`）存到該 process 的 context
+
+                        2. 把 cpu -> context 的內容重新載入暫存器（其中就包括 scheduler 之前呼叫 swtch(&c->context, &p->context) 時的下一行位址，這個位址會被放在 `ra`）
+
+                        3. 接著透過 `ret` 回到 scheduler 中
+
+                    - 等到 scheduler 重新挑選一個要被執行的 process （ process B ）又會再做一次 `swtch` （schdeuler 中的）
+
+                        1. 把 process B 的 context 放到暫存器中（包含之前保存 `ra`）
+
+                        2. 把 scheduler 的暫存器值存到 cpu 的 context 中
+                        
+                        3. 接著執行 `ret` 就可以順利切換到 process B
+        - 當 process 再次被 scheduler 選中，會回到 mycpu()->intena = intena; 恢復 intena；如果 process 被改為 `terminated` 的話這邊不可能執行，如果因為 bug 回到這個 process 執行 mycpu()->intena = intena 後，會跳出來
+    - 觸發 panic("zombie exit");
+
+
+6. `Ready` -> `Running`
+- `scheduler` -> `kernel/switch.S:swtch` -> `popreadylist` -> `kernel/switch.S:swtch`
+    - `scheduler` 會從 ready queue 中選出下一個要執行的 process 並修改他的狀態為 RUNNING，但目前的 scheduler 好像少了 `swtch` 動作

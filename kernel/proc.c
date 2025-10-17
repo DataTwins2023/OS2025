@@ -444,8 +444,8 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
-  //一開始先檢查目前正在跑的process是否為初始程序(initproc) 
-  //初始程序不能exit 否則會產生孤兒程序無法被妥善處理
+  // 一開始先檢查目前正在跑的process是否為初始程序(initproc) 
+  // 初始程序不能exit 否則會產生孤兒程序無法被妥善處理
   if(p == initproc)
     panic("init exiting");
 
@@ -457,10 +457,13 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
-  // 這個區塊處理exit process的相關的檔案操作
-  // 用begin_op, end_op包起來表示中間的被執行指令被視為一個transaction
-  // iput()會把process的CWD的inode的reference count減一如果被減到0就釋放這個inode
+
+  // 檔案系統的事務機制 (Transaction)，確保檔案系統操作的原子性。
+  // 如果系統在 iput 過程中崩潰
+  // 檔案系統不會處於不一致狀態
+  // 要嘛完全完成，要嘛完全不做
   begin_op();
+  // iput 是 釋放對 inode 的引用
   iput(p->cwd);
   end_op();
   p->cwd = 0;
@@ -475,9 +478,10 @@ exit(int status)
   
   acquire(&p->lock);
 
-  p->xstate = status; // 更新exit state 之後會成為return value回傳到user space 
-  p->state = ZOMBIE; // 更新process state為 ZOMBIE
-  procstatelog(p); //將更新紀錄於日誌中
+  // xstate 儲存退出狀態
+  p->xstate = status;
+  p->state = ZOMBIE;
+  procstatelog(p);
 
   release(&wait_lock);
 
