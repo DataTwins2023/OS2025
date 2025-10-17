@@ -433,6 +433,66 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
             - 呼叫 `sched()`，這時候會把 ra 設為下一行的 p -> chan = 0; 當 process 重新取得 CPU 會從這邊開始執行
             - p -> chan = 0 是讓這個 process 不再屬於該 channel
     - 解開 tickslock 鎖
-4. `Waiting` -> `Ready`
+4. `Waiting` -> `Ready`  
+    <span style="color:red">
+    可能要再加上clockintr()在幹嘛以及是誰call wakeup(), swtch() 也沒有在過程中有提到 需要再確認 
+    </span>
+    - clockintr -> wakeup
+    - 接續上面的過程，當這個process經歷從 `Running` 到 `Waiting` 狀態轉換，此時此process在`ticks channel`上有一個node 表示因為clock interrupt的原因而進到`SLEEPING`的狀態
+    - 當sleep時間已達到傳入的ticks時，會執行`wakeup(&ticks)`
+    - `wakeup(&ticks)`會  
+        - 利用傳入的*chan參數(這裡是&ticks)透過`findchannel(chan)`找到對應的channel，如果沒找到則直接return
+        - `while((pn = popfrontproclist(&cn->pl)) != 0)`迴圈會把channel上所有的waiting processes node 釋放掉並喚醒  
+        - 在`while`迴圈中
+            - `p = pn->p`: 取得channel中front節點的process
+            - `freeproclistnode(pn)`: 從channel釋放掉front節點
+            - 在喚醒這個process之前先檢查喚醒是否合法，其中包含: 
+              - running proc不能wakeup自己
+              - 只能wakeup處於`SLEEPING`狀態的process
+              - 預wakeup的process處於正確的channel
+            - 上面三個檢查通過後即更新 p->state = RUNNABLE
+            - `procstatelog(p);`: 紀錄程序轉換的日誌
+            - `pushreadylist(p);`: 將此process push到ready queue，後續等待schedular安排是否要讓它`Running`
+            - 作後釋放這個process的lock，即完成這個process的喚醒
+        當channel全部的節點的processes都被喚醒後  
+        做`cn->used = 0;`: 更新channel的狀態為 <span style="color:green">未被使用</span>
 5. `Running` -> `Terminated`
-6. `Ready` -> `Running`
+   - sys_exit -> exit -> sched
+   - `sys_exit`(kernel/sysproc.c): 當running的user process要terminate時呼叫的system call 
+```c
+uint64
+sys_exit(void)
+{
+  int n;
+  argint(0, &n);
+  exit(n); // 在這邊呼叫kernel的exit(n) 並把從user space取得的參數傳入 
+  return 0;  // not reached
+}
+```
+  - `exit`(kernel/proc.c): 為kernel中處理running process要terminate的程式碼
+    ```c
+    struct proc *p = myproc(); //首先取得正在running的process
+    //一開始先檢查目前正在跑的process是否為初始程序(initproc) 
+    //初始程序不能exit 否則會產生孤兒程序無法被妥善處理
+    if(p == initproc)
+        panic("init exiting");
+
+    ```
+    - 接著處理預terminate process的檔案資源釋放，包含:  
+      - 關閉所有相關的open files
+      - 將process的CWD的inode的reference count減一 
+    - 處理與其child processes與parent process的關係，包含:  
+      - `reparent(p);`: 將所有其child processes變成init process  
+      - `wakeup(p->parent);`: Parent 可能處於wait()的sleep 喚醒它  
+    - 更新此process的狀態
+```c
+  p->xstate = status; // 更新exit state 之後會成為return value回傳到user space 
+  p->state = ZOMBIE; // 更新process state為 ZOMBIE
+  procstatelog(p); //將更新紀錄於日誌中
+  ...
+  sched(); //跳到scheduler 一般情況下不會再返回
+  panic("zombie exit");//若意外返回系統進入panic
+```
+ - `sched`:
+   -   
+1. `Ready` -> `Running`

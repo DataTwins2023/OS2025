@@ -444,7 +444,8 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
-
+  //一開始先檢查目前正在跑的process是否為初始程序(initproc) 
+  //初始程序不能exit 否則會產生孤兒程序無法被妥善處理
   if(p == initproc)
     panic("init exiting");
 
@@ -456,7 +457,9 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
-
+  // 這個區塊處理exit process的相關的檔案操作
+  // 用begin_op, end_op包起來表示中間的被執行指令被視為一個transaction
+  // iput()會把process的CWD的inode的reference count減一如果被減到0就釋放這個inode
   begin_op();
   iput(p->cwd);
   end_op();
@@ -472,9 +475,9 @@ exit(int status)
   
   acquire(&p->lock);
 
-  p->xstate = status;
-  p->state = ZOMBIE;
-  procstatelog(p);
+  p->xstate = status; // 更新exit state 之後會成為return value回傳到user space 
+  p->state = ZOMBIE; // 更新process state為 ZOMBIE
+  procstatelog(p); //將更新紀錄於日誌中
 
   release(&wait_lock);
 
@@ -715,26 +718,30 @@ sleep(void *chan, struct spinlock *lk)
 void
 wakeup(void *chan)
 {
-  struct proc *p;
-  struct channel *cn;
-  struct proclistnode *pn;
+  //下面三個local變數用來存wakeup對象的資料
+  struct proc *p; //proc指標: 用來指著正在被喚醒的process
+  struct channel *cn; //channel指標: 用來指著對應chan的channel (對應因某個事件被轉到的SLEEPING queue:在我們的例子中為clock interrupt)
+  struct proclistnode *pn; //process節點指標: 用來指著channel中被喚醒的processes的節點
 
-  if((cn = findchannel(chan)) == 0) {
+  //用findchannel找到對應chan的channel 如果找不到(==0) 直接return 避免作用在非合法的channel
+  if((cn = findchannel(chan)) == 0) { 
     // channel not initialized
     return;
   }
+
+  //迴圈把這個chan對應的sleeping queue上的所有processes pop出來並喚醒
   while((pn = popfrontproclist(&cn->pl)) != 0){
     p = pn->p;
     freeproclistnode(pn);
-    acquire(&p->lock);
-    // Assertions
-    if(p == myproc()) {
+    acquire(&p->lock); //把process的資料先lock住 避免同時有其他cpu在access它
+    // Assertions: 在將更新狀態前先將檢查wakeup是否合法
+    if(p == myproc()) { //不能wakeup自己
       panic("wakeup: wakeup self");
     }
-    if(p->state != SLEEPING) {
+    if(p->state != SLEEPING) { //只能wakeup處於sleep狀態的process
       panic("wakeup: not sleeping");
     }
-    if(p->chan != chan) {
+    if(p->chan != chan) { //wakeup正確的channel
       panic("wakeup: wrong channel");
     }
     p->state = RUNNABLE;
