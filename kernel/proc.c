@@ -956,7 +956,9 @@ proclistinit(void)
   initproclist(&l3_queue);
 
   // cmp 先傳入 NULL 之後再實作
-  initsortedproclist(&l2_queue, 0);
+  // implementation step 3
+  // 補上 l2 比較函數
+  initsortedproclist(&l2_queue, l2_cmp);
   initsortedproclist(&l1_queue, 0);
 
   for(i = 0; i < NCHANNEL; i++){
@@ -1319,5 +1321,28 @@ popreadylist()
   }
 
   // 三個 queue 都沒有
+  return 0;
+}
+
+
+// implementation step3
+int 
+l2_cmp(struct proc *p1, struct proc *p2)
+{
+  if(p1 -> priority > p2 -> priority) {
+    return 1;
+  }
+  if(p1 -> priority < p2 -> priority) {
+    return -1;
+  }
+
+  // p1 -> priority == p2 -> priority
+  if(p1 -> pid < p2 -> pid) {
+    return 1; // p1 id 小 優先
+  }
+  if(p1 -> pid > p2 -> pid) {
+    return -1; // p1 id 小 優先
+  }
+
   return 0;
 }
