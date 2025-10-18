@@ -583,7 +583,6 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     | -------- | -------- |
     | `t_i` & `T` |  L1 Queue； `t_i-1` 不需要紀錄，因為**更新前**的 `p->t_i` 就是 `t_{i-1}`| 
     | `wait_ticks` | aging 機制紀錄到底等了多少 ticks |
-    | `time_slice_used` | L3 Queue 紀錄 process 用了多少 slice |
     
     - 宣告三個 ready queue（kernel/proc.c 中）
     ```c
@@ -610,9 +609,9 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
         // 但現在要初始化 l1, l2, l3 queue
         initproclist(&l3_queue);
 
-        // cmp 先傳入 NULL 之後再實作
-        initsortedproclist(&l2_queue, NULL);
-        initsortedproclist(&l3_queue, NULL);
+        // cmp 先傳入 0 之後再實作
+        initsortedproclist(&l2_queue, 0);
+        initsortedproclist(&l3_queue, 0);
         ```
         `initproclist` 也實作在 kernel/proc.c ，它會：
         - 初始化 queue 的大小
@@ -627,11 +626,11 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
         修改 kernel/proc.c 中的 `allocproc()`
         ```c
         // implementation step 1
-        p -> priority = 149;
-        p -> t_i = 0;
-        p -> T = 0;
-        p -> wait_ticks = 0;
-        p -> time_slice_used = 0;
+        + p -> priority = 149;
+        + p -> t_i = 0;
+        + p -> T = 0;
+        + p -> wait_ticks = 0;
+        + p -> time_slice_used = 0;
         ```
         新增這一部分
 
@@ -642,3 +641,256 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     | `proclistinit()` | 初始化所有 process 排程相關的資料結構 |
 
     
+2. 實作 L3 
+    - 目前 `pushreadylist` 是將全部的 `RUNNABLE` process 放到 readylist，並沒有依據 priority 分級，所以現在先修改這一部分
+        - `pushreadylist` 實作在 kernel/proc.c 中
+        - 透過 if-else 的判斷，依據 p -> priority 決定 `proclistnode` 要放入哪一個 ready queue
+            ```c
+            // 把節點加到 ready list 的尾端
+            // pushbackproclist(&readylist, pn);
+
+            // 要依據 priority 決定要放在哪一個 ready queue
+            + if(p->priority >= 100 && p->priority <= 149) {
+            +     // L1: priority 100-149
+            +     pushsortedproclist(&l1_queue, pn);
+            + }
+            + else if(p->priority >= 50 && p->priority <= 99) {
+            +     // L2: priority 50-99
+            +     pushsortedproclist(&l2_queue, pn);
+            + }
+            + else if(p->priority >= 0 && p->priority <= 49) {
+            +     // L3: priority 0-49
+            +     pushbackproclist(&l3_queue, pn);
+            + }
+            + else {
+            +     // 一個保險機制
+            +     panic("pushreadylist: pid = %d's priority = %d \n is out of range", p -> pid, p -> priority);
+            + }
+            ```
+    - 同理，目前 `popreadylist` 也是從 readylist 取出最前面的 node，但要改為依照 l1 > l2 > l3 的順序取出
+        ```c
+        // scheduler managed, pop from ready list
+        // implementation step 2
+        struct proc*
+        popreadylist()
+        {
+        struct proc *p;
+        struct proclistnode *pn;
+        /*
+        if((pn = popfrontproclist(&readylist)) == 0) {
+            return 0; // no runnable processes
+        }
+        p = pn->p;
+        freeproclistnode(pn);
+        return p;
+        */
+
+        // 優先從 l1 取
+        + if((pn = popsortedproclist(&l1_queue)) != 0) {
+        +     p = pn ->p ;
+        +     freeproclistnode(pn);
+        +     return p;
+        + }
+
+        + // l1 沒了就從 l2 取
+        + if((pn = popsortedproclist(&l2_queue)) != 0) {
+        +     p = pn ->p ;
+        +     freeproclistnode(pn);
+        +     return p;
+        + }
+
+        + // l2 沒了就從 l3 取
+        + if((pn = popfrontproclist(&l3_queue)) != 0) {
+        +     p = pn ->p ;
+        +     freeproclistnode(pn);
+        +     return p;
+        + }
+
+        + // 三個 queue 都沒有
+        + return 0;
+        }
+        ```
+        雖然 pop 邏輯都一樣，但 xv6 有分為 `popsortedproclist` 及 `popfrontproclist`，整體來說就是取出 node 並修改結構
+    - 在前面 trace code 時就發現，`scheduler` 中目前缺少 `swtch` 的過程，這會導致被選中的 process 無法執行，系統跳不出 scheduler，所以現在要先解決這個問題
+        ```c
+        void
+        scheduler(void)
+        {
+        struct proc *p;
+        struct cpu *c = mycpu();
+        
+        c->proc = 0;
+        for(;;){
+            // Avoid deadlock by ensuring that devices can interrupt.
+            intr_on();
+
+            if((p = popreadylist()) == 0) {
+            // no runnable processes, waiting...
+            continue;
+            }
+            acquire(&p->lock);
+            if(p->state != RUNNABLE) {
+            panic("scheduler: p->state != RUNNABLE");
+            }
+            // Switch to chosen process.  It is the process's job
+            // to release its lock and then reacquire it
+            // before jumping back to us.
+            p->startrunningticks = ticks;
+            p->state = RUNNING;
+            c->proc = p;
+            procstatelog(p);
+            
+            + //implementation step 2
+            + swtch(&c -> context, &p -> context);
+
+            // Process is done running for now.
+            // It should have changed its p->state before coming back.
+            c->proc = 0;
+
+            release(&p->lock);
+        }
+        }           
+        ```
+    - 修改 `implicityield`
+        - `implicityield`透過 `devintr` 如果發現是 timer interrupt 就會被呼叫，接著會去檢查現在擁有 CPU 的 process 是不是已經執行超過一定的時間，如果是的話就會呼叫 `yield`進而放棄 CPU。原本的系統是預設所有的 process 都會走這個流程，但依據 SPEC，只有 l3 的 process 會使用 RR 演算法。因此需要先確定 priority 再依據 ticks 決定是否放棄 CPU
+        ```c
+        void
+        implicityield(void)
+        {
+        struct proc *p = myproc();
+        // if(ticks - p->startrunningticks >= 1) {
+            // yield round robin scheduling
+            // actually ticks - p->startrunningticks should be 1
+            // yield();
+        // }
+        // implementation step 2
+        // 先確認 process 是不是在 l3
+        + if(p -> priority >= 0 && p -> priority <= 49) {
+        +     // l3 是要求 10 個 ticks
+        +     if(ticks - p->startrunningticks >= 10) {
+        +     yield();
+        +     }
+        + }
+        // 先不管 l1, l2
+        }
+        ```
+
+3. 實作 L2
+    - 這部分要做的事情是把前面 `initsortedproclist` 的比較函數實作（實作在 kernel/proc.c 中）
+        ```c
+        // implementation step3
+        int 
+        l2_cmp(struct proc *p1, struct proc *p2)
+        {
+        if(p1 -> priority > p2 -> priority) {
+            return 1;
+        }
+        if(p1 -> priority < p2 -> priority) {
+            return -1;
+        }
+
+        // p1 -> priority == p2 -> priority
+        if(p1 -> pid < p2 -> pid) {
+            return 1; // p1 id 小 優先
+        }
+        if(p1 -> pid > p2 -> pid) {
+            return -1; // p1 id 小 優先
+        }
+
+        return 0;
+        }
+        ```
+    - 修改 `proclistinit()` 中的 `initsortedproclist(&l2_queue, 0)`
+        ```c
+        // initialize process list related data structures.
+        void
+        proclistinit(void)
+        {
+        int i;
+        // initialize proclistnodes.
+        for(i = 0; i < NPROCLISTNODE; i++){
+            // implementation step 1
+            // proclistnodes 是一個存有 256 個 proclistnode 的陣列
+            // 先把它們都變 unused
+            proclistnodes[i].used = 0;
+            // implementation step 1
+            // initlock 實作在 kernel/spinlock.c 中
+            // 初始化每個 proclistnode 的鎖，初始狀態是 未上鎖，並且沒有 CPU 持有這個鎖，然後給一個名字
+            // 每個鎖給同樣的名字沒問題，因為這只是用來 debug 的，實際上還是看鎖的 記憶體位址
+            initlock(&proclistnodes[i].lock, "proclistnode");
+        }
+        // initialize readylist.
+        // initproclist(&readylist);
+        // initialize channels.
+        // implementation step 1
+        // 原本只初始化 readylist
+        // 但現在要初始化 l1, l2, l3 queue
+        initproclist(&l3_queue);
+
+        // cmp 先傳入 NULL 之後再實作
+        // implementation step 3
+        // 補上 l2 比較函數
+        - initsortedproclist(&l2_queue, 0);
+        + initsortedproclist(&l2_queue, l2_cmp);
+        initsortedproclist(&l1_queue, 0);
+
+        for(i = 0; i < NCHANNEL; i++){
+            channels[i].used = 0;
+            initproclist(&channels[i].pl);
+            initlock(&channels[i].lock, "channel");
+        }
+        }
+        ```
+    - 這個 cmp function 會在 kernel/proc.c 的 `pushsortedproclist` 中產生作用
+        ```c
+        // push an element to a sortedproclist following the comparison function.
+        void
+        pushsortedproclist(struct sortedproclist *pl, struct proclistnode *pn)
+        {
+        struct proclistnode *pn1;
+        acquire(&pl->lock);
+        pl->size++;
+        for(pn1 = pl->head->next; pn1 != pl->tail; pn1 = pn1->next){
+            if(pl->cmp(pn->p, pn1->p) > 0){
+            break;
+            }
+        }
+        pn->next = pn1;
+        pn->prev = pn1->prev;
+        pn1->prev->next = pn;
+        pn1->prev = pn;
+        release(&pl->lock);
+        }
+        ```
+        當要把一個 process 放入 ready queue 中，就會從 ready queue 的頭（哨兵節點）一路檢查到尾端（也是哨兵節點）<br>對每一個節點會使用 `sortedproclist` 的 cmp function 進行比較，如果確認回傳值大於 0（代表要插入的 proclistnode 優先級高於目前比較的 proclistnode） break 出迴圈並開始插入在目前比較的 proclistnode 之前。
+
+4. 實作 L1
+    - 這部分要做的事情是把前面 `initsortedproclist` 的比較函數實作（實作在 kernel/proc.c 中）
+        ```c
+        int
+        l1_cmp(struct proc *p1, struct proc *p2)
+        {
+        int p1_remaining_t = p1 -> t_i - p1 -> T;
+        int p2_remaining_t = p2 -> t_i - p2 -> T;
+
+        // Rule 1: Shorter remaining time first
+        if(remaining1 < remaining2) {
+            return 1;  // p1 剩餘時間短 優先
+        }
+        if(remaining1 > remaining2) {
+            return -1;  // p2 剩餘時間短 優先
+        }
+        
+        // Rule 2: Same remaining time, smaller pid first
+        if(p1->pid < p2->pid) {
+            return 1;  // p1 id 小 優先
+        }
+        if(p1->pid > p2->pid) {
+            return -1;  // p2 id 小 優先
+        }
+        
+        return 0;
+        }
+        ```
+    - 這個 cmp function 會在 kernel/proc.c 的 `pushsortedproclist` 中產生作用
+    - 更新部分，後面才會實作

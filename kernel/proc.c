@@ -174,7 +174,6 @@ found:
   p -> t_i = 0;
   p -> T = 0;
   p -> wait_ticks = 0;
-  p -> time_slice_used = 0;
 
   return p;
 }
@@ -959,7 +958,7 @@ proclistinit(void)
   // implementation step 3
   // 補上 l2 比較函數
   initsortedproclist(&l2_queue, l2_cmp);
-  initsortedproclist(&l1_queue, 0);
+  initsortedproclist(&l1_queue, l1_cmp);
 
   for(i = 0; i < NCHANNEL; i++){
     channels[i].used = 0;
@@ -1344,5 +1343,31 @@ l2_cmp(struct proc *p1, struct proc *p2)
     return -1; // p1 id 小 優先
   }
 
+  return 0;
+}
+
+// implementation step4
+int
+l1_cmp(struct proc *p1, struct proc *p2)
+{
+  int p1_remaining_t = p1 -> t_i - p1 -> T;
+  int p2_remaining_t = p2 -> t_i - p2 -> T;
+
+  // Rule 1: Shorter remaining time first
+  if(remaining1 < remaining2) {
+    return 1;  // p1 剩餘時間短 優先
+  }
+  if(remaining1 > remaining2) {
+    return -1;  // p2 剩餘時間短 優先
+  }
+  
+  // Rule 2: Same remaining time, smaller pid first
+  if(p1->pid < p2->pid) {
+    return 1;  // p1 id 小 優先
+  }
+  if(p1->pid > p2->pid) {
+    return -1;  // p2 id 小 優先
+  }
+  
   return 0;
 }

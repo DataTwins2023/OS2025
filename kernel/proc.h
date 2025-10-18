@@ -117,9 +117,6 @@ struct proc {
 
   // for aging
   int wait_ticks;
-
-  // for l3 queue
-  int time_slice_used;
 };
 
 // for mp2
