@@ -585,6 +585,8 @@ scheduler(void)
     c->proc = p;
     procstatelog(p);
     
+    //implementation step 2
+    swtch(&c -> context, &p -> context);
 
     // Process is done running for now.
     // It should have changed its p->state before coming back.
@@ -655,11 +657,20 @@ void
 implicityield(void)
 {
   struct proc *p = myproc();
-  if(ticks - p->startrunningticks >= 1) {
+  // if(ticks - p->startrunningticks >= 1) {
     // yield round robin scheduling
     // actually ticks - p->startrunningticks should be 1
-    yield();
+    // yield();
+  // }
+  // implementation step 2
+  // 先確認 process 是不是在 l3
+  if(p -> priority >= 0 && p -> priority <= 49) {
+    // l3 是要求 10 個 ticks
+    if(ticks - p->startrunningticks >= 10) {
+      yield();
+    }
   }
+  // 先不管 l1, l2
 }
 
 // A fork child's very first scheduling by scheduler()
@@ -1239,6 +1250,7 @@ findchannel(void *chan)
 }
 
 // scheduler managed, push to ready list
+// implementation step 2
 void
 pushreadylist(struct proc *p)
 {
@@ -1248,19 +1260,64 @@ pushreadylist(struct proc *p)
     panic("pushreadylist: allocproclistnode");
   }
   // 把節點加到 ready list 的尾端
-  pushbackproclist(&readylist, pn);
+  // pushbackproclist(&readylist, pn);
+
+  // 要依據 priority 決定要放在哪一個 ready queue
+  if(p->priority >= 100 && p->priority <= 149) {
+    // L1: priority 100-149
+    pushsortedproclist(&l1_queue, pn);
+  }
+  else if(p->priority >= 50 && p->priority <= 99) {
+    // L2: priority 50-99
+    pushsortedproclist(&l2_queue, pn);
+  }
+  else if(p->priority >= 0 && p->priority <= 49) {
+    // L3: priority 0-49
+    pushbackproclist(&l3_queue, pn);
+  }
+  else {
+    // 一個保險機制
+    panic("pushreadylist: pid = %d's priority = %d \n is out of range", p -> pid, p -> priority);
+  }
 }
 
 // scheduler managed, pop from ready list
+// implementation step 2
 struct proc*
 popreadylist()
 {
   struct proc *p;
   struct proclistnode *pn;
+  /*
   if((pn = popfrontproclist(&readylist)) == 0) {
     return 0; // no runnable processes
   }
   p = pn->p;
   freeproclistnode(pn);
   return p;
+  */
+
+  // 優先從 l1 取
+  if((pn = popsortedproclist(&l1_queue)) != 0) {
+    p = pn ->p ;
+    freeproclistnode(pn);
+    return p;
+  }
+
+  // l1 沒了就從 l2 取
+  if((pn = popsortedproclist(&l2_queue)) != 0) {
+    p = pn ->p ;
+    freeproclistnode(pn);
+    return p;
+  }
+
+  // l2 沒了就從 l3 取
+  if((pn = popfrontproclist(&l3_queue)) != 0) {
+    p = pn ->p ;
+    freeproclistnode(pn);
+    return p;
+  }
+
+  // 三個 queue 都沒有
+  return 0;
 }
