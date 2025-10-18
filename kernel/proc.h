@@ -109,6 +109,17 @@ struct proc {
 
   // scheduler related
   int startrunningticks;       // ticks when the process started running
+
+  // implementation step1
+  // for l1 queue
+  int t_i;
+  int T;
+
+  // for aging
+  int wait_ticks;
+
+  // for l3 queue
+  int time_slice_used;
 };
 
 // for mp2
@@ -122,9 +133,12 @@ struct proclistnode {
 
 struct proclist {
   int size;
+  // implementation 1
+  // 哨兵節點（sentinel nodes）是一個永遠存在但不存 process 的 node ，好處是不用檢查 proclist 是否為空（因為至少有兩個假的 node）
   struct proclistnode buf[2]; // head and tail sentinel nodes
   struct proclistnode *head;
   struct proclistnode *tail;
+  // 保護 proclist 同時被多個 CPU 存取
   struct spinlock lock;
 };
 
@@ -133,6 +147,7 @@ struct sortedproclist {
   struct proclistnode buf[2]; // head and tail sentinel nodes
   struct proclistnode *head;
   struct proclistnode *tail;
+  // 比較函數
   int (*cmp)(struct proc *, struct proc *);
   struct spinlock lock;
 };

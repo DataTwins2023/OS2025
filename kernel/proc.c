@@ -31,6 +31,11 @@ struct proclist readylist;
 
 struct channel channels[NCHANNEL];
 
+// implementation step1
+struct proclist l3_queue;
+struct sortedproclist l2_queue;
+struct sortedproclist l1_queue;
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -163,6 +168,13 @@ found:
   p->context.ra = (uint64)forkret;
   // 設定 sp 為 kernel stack 的頂端
   p->context.sp = p->kstack + PGSIZE;
+
+  // implementation step 1
+  p -> priority = 149;
+  p -> t_i = 0;
+  p -> T = 0;
+  p -> wait_ticks = 0;
+  p -> time_slice_used = 0;
 
   return p;
 }
@@ -914,12 +926,28 @@ proclistinit(void)
   int i;
   // initialize proclistnodes.
   for(i = 0; i < NPROCLISTNODE; i++){
+    // implementation step 1
+    // proclistnodes 是一個存有 256 個 proclistnode 的陣列
+    // 先把它們都變 unused
     proclistnodes[i].used = 0;
+    // implementation step 1
+    // initlock 實作在 kernel/spinlock.c 中
+    // 初始化每個 proclistnode 的鎖，初始狀態是 未上鎖，並且沒有 CPU 持有這個鎖，然後給一個名字
+    // 每個鎖給同樣的名字沒問題，因為這只是用來 debug 的，實際上還是看鎖的 記憶體位址
     initlock(&proclistnodes[i].lock, "proclistnode");
   }
   // initialize readylist.
-  initproclist(&readylist);
+  // initproclist(&readylist);
   // initialize channels.
+  // implementation step 1
+  // 原本只初始化 readylist
+  // 但現在要初始化 l1, l2, l3 queue
+  initproclist(&l3_queue);
+
+  // cmp 先傳入 NULL 之後再實作
+  initsortedproclist(&l2_queue, 0);
+  initsortedproclist(&l1_queue, 0);
+
   for(i = 0; i < NCHANNEL; i++){
     channels[i].used = 0;
     initproclist(&channels[i].pl);
@@ -971,7 +999,9 @@ initproclist(struct proclist *pl)
     pl->buf[i].p = 0;
     initlock(&pl->buf[i].lock, "proclistsentinel");
   }
+  // head 指向第一個哨兵
   pl->head = &pl->buf[0];
+  // tail 指向第二個哨兵
   pl->tail = &pl->buf[1];
   pl->head->next = pl->tail;
   pl->head->prev = 0;

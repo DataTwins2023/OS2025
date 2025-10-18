@@ -561,3 +561,84 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
 6. `Ready` -> `Running`
 - `scheduler` -> `kernel/switch.S:swtch` -> `popreadylist` -> `kernel/switch.S:swtch`
     - `scheduler` 會從 ready queue 中選出下一個要執行的 process 並修改他的狀態為 RUNNING，但目前的 scheduler 好像少了 `swtch` 動作
+
+
+
+## Implementation
+
+開始實作的部分，這邊將實作的過程分為 6 個階段
+
+1. 新增 struct proc（kernel/proc.h）需要的 attribute，以及宣告三個 Ready Queue
+2. 實作 L3
+3. 實作 L2
+4. 實作 L1
+5. 不同 Queue 間的 Preemption
+6. Aging
+---------------------
+
+1. 新增 struct proc（kernel/proc.h）需要的 attribute，以及宣告三個 Ready Queue
+    - 新增 attribute
+
+    | 新增的 attribute | 用途 |
+    | -------- | -------- |
+    | `t_i` & `T` |  L1 Queue； `t_i-1` 不需要紀錄，因為**更新前**的 `p->t_i` 就是 `t_{i-1}`| 
+    | `wait_ticks` | aging 機制紀錄到底等了多少 ticks |
+    | `time_slice_used` | L3 Queue 紀錄 process 用了多少 slice |
+    
+    - 宣告三個 ready queue（kernel/proc.c 中）
+    ```c
+    struct proclist l3_queue;
+    struct sortedproclist l2_queue;
+    struct sortedproclist l1_queue;
+    ```
+
+    - 初始化三個 ready queue
+    
+        實作在 kernel/proc.c 中的 `proclistinit`，他的目的是初始化所有跟「process 排程」有關的資料結構，做三件事
+        
+        - 初始化 proclistnodes：這裡面有一個動作是 `initlock`，必且會給每個 lock 同樣的名稱，但這不會有問題，因為名稱只是 debug 用，實際在使用還是依照 mem address
+        - 初始化 readylist（包括 l1, l2, l3）
+        - 初始化 channels
+
+        初始化三個 readyqueue
+        ```c
+        // initialize readylist.
+        // initproclist(&readylist);
+        // initialize channels.
+        // implementation step 1
+        // 原本只初始化 readylist
+        // 但現在要初始化 l1, l2, l3 queue
+        initproclist(&l3_queue);
+
+        // cmp 先傳入 NULL 之後再實作
+        initsortedproclist(&l2_queue, NULL);
+        initsortedproclist(&l3_queue, NULL);
+        ```
+        `initproclist` 也實作在 kernel/proc.c ，它會：
+        - 初始化 queue 的大小
+        - 設置兩個哨兵，然後給他們鎖
+        - 設定 head & tail 指標
+        - 設定 head 跟 tail 的連結，一開始 head 跟 tail 間沒有東西
+        - 初始化 queue 本身的鎖
+        
+        `initsortedproclist` 跟 `initproclist` 相比只是多了 `cmp` 函數的設置
+
+    - 初始化新的 proc 欄位
+        修改 kernel/proc.c 中的 `allocproc()`
+        ```c
+        // implementation step 1
+        p -> priority = 149;
+        p -> t_i = 0;
+        p -> T = 0;
+        p -> wait_ticks = 0;
+        p -> time_slice_used = 0;
+        ```
+        新增這一部分
+
+    | function | 目的 |
+    | -------- | -------- |
+    | `procinit()` | 初始化 process table | 
+    | `allocproc()` | 分配一個 process |
+    | `proclistinit()` | 初始化所有 process 排程相關的資料結構 |
+
+    
