@@ -559,7 +559,12 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
 
 6. `Ready` -> `Running`
 - `scheduler` -> `kernel/switch.S:swtch` -> `popreadylist` -> `kernel/switch.S:swtch`
-    - `scheduler` 會從 ready queue 中選出下一個要執行的 process 並修改他的狀態為 RUNNING，但目前的 scheduler 好像少了 `swtch` 動作
+    - 這個狀態轉換是描述 scheduler 如何從 ready queue 中選出下一個要執行的 process，並且讓它開始執行。
+
+    - 第一個 `swtch` 代表的是從前一個 process（old process）切換回 scheduler
+        - 完整流程是當某個 process 要放棄 CPU 時會透過 `yield()`，而 `yield()` 中會再透過 `swtch` 使 CPU 重新回到 scheduler 中繼續進行
+    - 在 scheduler 中會做的事情在上面有提過
+    - 第二個 `swtch` 是從 scheduler 切換到被選中的 process
 
 
 
