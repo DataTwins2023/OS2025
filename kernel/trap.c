@@ -168,6 +168,22 @@ clockintr()
 {
   acquire(&tickslock);
   ticks++;
+  // implementation step4
+  struct proc *p = myproc();
+  // 檢查 myproc() != 0 是要防止:
+  // 1. Scheduler 正在等待 process (c->proc = 0)
+  // 2. Process 切換的間隙 (scheduler 剛清空 c->proc)
+  // 3. 系統初始化或所有 process 結束
+
+  // 檢查 state == RUNNING 是要防止:
+  // Process 剛進 yield(),state 已改為 RUNNABLE
+  // 但還沒完全切換到 scheduler
+  // 此時 T 不應該累積
+  if(p != 0 && p -> state == RUNNING) {
+    if(p -> priority >= 100 && p -> priority <= 149) {
+      p -> T++;
+    }
+  }
   // 實作在 kernel/proc.c
   wakeup(&ticks);
   release(&tickslock);

@@ -717,6 +717,12 @@ sleep(void *chan, struct spinlock *lk)
   }
   // 釋放 tickslock
   release(lk);
+  // implementation step 4
+  // RUNNING -> WAITING 更新 l1 process 的 t_i
+  if(p -> priority >= 100 && p -> priority <= 149) {
+    p -> t_i = (p -> T + p -> t_i) / 2;
+    p -> T = 0; // 重置 T
+  }
 
   // Go to sleep.
   p->chan = chan;
@@ -1267,6 +1273,18 @@ pushreadylist(struct proc *p)
   if(p->priority >= 100 && p->priority <= 149) {
     // L1: priority 100-149
     pushsortedproclist(&l1_queue, pn);
+
+    // implementation step 4
+    // 關於 l1 內部的 preemptive
+    struct proc *cur = myproc();
+    if(cur != 0 && cur -> state == RUNNING && cur -> priority >= 100 && cur -> priority <= 149) {
+      int cur_remaining = cur -> t_i - cur -> T;
+      int new_remaining = p -> t_i - p -> T;
+
+      if(new_remaining < cur_remaining) {
+        yield(); // 現在的 process 就 yield
+      }
+    }
   }
   else if(p->priority >= 50 && p->priority <= 99) {
     // L2: priority 50-99
@@ -1354,10 +1372,10 @@ l1_cmp(struct proc *p1, struct proc *p2)
   int p2_remaining_t = p2 -> t_i - p2 -> T;
 
   // Rule 1: Shorter remaining time first
-  if(remaining1 < remaining2) {
+  if(p1_remaining_t < p2_remaining_t) {
     return 1;  // p1 剩餘時間短 優先
   }
-  if(remaining1 > remaining2) {
+  if(p1_remaining_t > p2_remaining_t) {
     return -1;  // p2 剩餘時間短 優先
   }
   
