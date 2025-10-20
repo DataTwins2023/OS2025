@@ -1110,3 +1110,172 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
                 }
             }
             ```
+
+    - 接著實作 aging
+    
+        aging 的要求是每 20 ticks，在 `READY` 狀態的 process priority 要 +1，且如果有需要的話要移動 process 到正確的 ready queue。
+
+        針對這個要求，需要改動三個地方：
+        - 使用在 step 1 中設計的 `wait_ticks`，它的用途是紀錄 process 已經持續 `READY` 狀態多久了。所以當 process 進入 `READY` 狀態，要把它初始化為 0 ，且 process 從 `READY` 轉為 `RUNNING` 也需要把 `wait_ticks` 歸零，這邊將其實作在 kernel/proc.c 的 `scheduler` 中。
+            -   進入 `READY` 狀態初始化 `wait_ticks` 為 0
+            ```c
+            void
+            pushreadylist(struct proc *p)
+            {
+                struct proclistnode *pn;
+                // 創建一個節點來包裝 process
+                if((pn = allocproclistnode(p)) == 0) {
+                    panic("pushreadylist: allocproclistnode");
+            }
+
+            // implementation step 6
+            + p -> wait_ticks = 0;
+            ```
+            - 從 `READY` 轉為 `RUNNING` 也需要把 `wait_ticks` 歸零
+            ```c
+            void
+            scheduler(void)
+            {
+            struct proc *p;
+            struct cpu *c = mycpu();
+            
+            c->proc = 0;
+            for(;;){
+                // Avoid deadlock by ensuring that devices can interrupt.
+                intr_on();
+
+                if((p = popreadylist()) == 0) {
+                // no runnable processes, waiting...
+                continue;
+                }
+                acquire(&p->lock);
+                if(p->state != RUNNABLE) {
+                panic("scheduler: p->state != RUNNABLE");
+                }
+                // Switch to chosen process.  It is the process's job
+                // to release its lock and then reacquire it
+                // before jumping back to us.
+                p->startrunningticks = ticks;
+                // implementation step 6
+            +     // 取得 CPU 時 wait_ticks 歸零
+            +     p->wait_ticks = 0;
+                p->state = RUNNING;
+                c->proc = p;
+                procstatelog(p);
+                
+                //implementation step 2
+                swtch(&c -> context, &p -> context);
+
+                // Process is done running for now.
+                // It should have changed its p->state before coming back.
+                c->proc = 0;
+
+                release(&p->lock);
+            }
+            }
+            ```
+        - 實作一個 `aging` 函數，負責
+            - 增加 `wait_ticks`
+            - 確認 `wait_ticks` 是否大於等於 20 ticks，如果成立：
+                - 修改 priority，同時確保沒有超過上限
+                - 重置 `wait_ticks`
+                - 檢查是否需要換 queue
+                - 若有需要執行換 queue（包括從舊 queue 移除以及加入新的 queue）
+            ```c
+            void
+            aging(void)
+            {
+                struct proc *p;
+                
+                for(p = proc; p < &proc[NPROC]; p++) {
+                    acquire(&p->lock);
+                    
+                    // 只處理 ready queue
+                    if(p->state == RUNNABLE) {
+                    
+                        p->wait_ticks++;  // 累積等待時間
+                    
+                        // 每 20 ticks 提升 priority
+                        if(p->wait_ticks >= 20) {
+                        
+                            int old_priority = p->priority;
+                            
+                            if(p->priority < 149) {
+                            p->priority++;
+                            }
+                            
+                            // 重置計數器
+                            p->wait_ticks = 0;
+                            
+                            // 檢查是否需要換 queue
+                            int old_queue = -1;  // 0=L3, 1=L2, 2=L1
+                            int new_queue = -1;
+                            
+                            // old queue
+                            if(old_priority >= 0 && old_priority <= 49) {
+                                old_queue = 0;
+                            } else if(old_priority >= 50 && old_priority <= 99) {
+                                old_queue = 1;
+                            } else if(old_priority >= 100 && old_priority <= 149) {
+                                old_queue = 2;
+                            }
+                            
+                            // new queue
+                            if(p->priority >= 0 && p->priority <= 49) {
+                                new_queue = 0;
+                            } else if(p->priority >= 50 && p->priority <= 99) {
+                            n   ew_queue = 1;
+                            } else if(p->priority >= 100 && p->priority <= 149) {
+                                new_queue = 2;
+                            }
+                        
+                            // 跨 queue
+                            if(old_queue != new_queue && old_queue != -1 && new_queue != -1) {
+                        
+                                struct proclistnode *pn;
+                        
+                                // remove from old queue
+                                if(old_queue == 0) {
+                                    // L3
+                                    if((pn = findproclist(&l3_queue, p)) != 0) {
+                                    removeproclist(&l3_queue, pn);
+                                    freeproclistnode(pn);
+                                    }
+                                } else if(old_queue == 1) {
+                                    // L2
+                                    if((pn = findproclist(&l2_queue, p)) != 0) {
+                                    removeproclist(&l2_queue, pn);
+                                    freeproclistnode(pn);
+                                    }
+                                } else if(old_queue == 2) {
+                                    // L1
+                                    if((pn = findproclist(&l1_queue, p)) != 0) {
+                                    removeproclist(&l1_queue, pn);
+                                    freeproclistnode(pn);
+                                    }
+                                }
+                        
+                                // add to new queue
+                                if((pn = allocproclistnode(p)) == 0) {
+                                    panic("aging: allocproclistnode");
+                                }
+                                
+                                if(new_queue == 0) {
+                                    // L3
+                                    pushbackproclist(&l3_queue, pn);
+                                } else if(new_queue == 1) {
+                                    // L2
+                                    pushsortedproclist(&l2_queue, pn);
+                                } else if(new_queue == 2) {
+                                    // L1
+                                    pushsortedproclist(&l1_queue, pn);
+                                }
+                            }
+                        }
+                    }
+                    
+                    release(&p->lock);
+                }
+            }
+            ```
+        - 在 kernel/trap.c 的 `clockintr` 中加入 `aging()` 呼叫

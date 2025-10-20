@@ -580,6 +580,9 @@ scheduler(void)
     // to release its lock and then reacquire it
     // before jumping back to us.
     p->startrunningticks = ticks;
+    // implementation step 6
+    // 取得 CPU 時 wait_ticks 歸零
+    p->wait_ticks = 0;
     p->state = RUNNING;
     c->proc = p;
     procstatelog(p);
@@ -1267,6 +1270,9 @@ pushreadylist(struct proc *p)
     panic("pushreadylist: allocproclistnode");
   }
 
+  // implementation step 6
+  p -> wait_ticks = 0;
+
   // implementation step 5
   struct proc *cur = myproc();
   int should_yield = 0;
@@ -1412,4 +1418,104 @@ l1_cmp(struct proc *p1, struct proc *p2)
   }
   
   return 0;
+}
+
+// implementation step 6
+// 實作一個 aging 函數
+// Aging
+void
+aging(void)
+{
+  struct proc *p;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    
+    // 只處理 ready queue
+    if(p->state == RUNNABLE) {
+      
+      p->wait_ticks++;  // 累積等待時間
+      
+      // 每 20 ticks 提升 priority
+      if(p->wait_ticks >= 20) {
+        
+        int old_priority = p->priority;
+        
+        // 上限 149
+        if(p->priority < 149) {
+          p->priority++;
+        }
+        
+        // 重置計數器
+        p->wait_ticks = 0;
+        
+        // 檢查是否需要換 queue
+        int old_queue = -1;  // 0=L3, 1=L2, 2=L1
+        int new_queue = -1;
+        
+        // old queue
+        if(old_priority >= 0 && old_priority <= 49) {
+          old_queue = 0;
+        } else if(old_priority >= 50 && old_priority <= 99) {
+          old_queue = 1;
+        } else if(old_priority >= 100 && old_priority <= 149) {
+          old_queue = 2;
+        }
+        
+        // new queue
+        if(p->priority >= 0 && p->priority <= 49) {
+          new_queue = 0;
+        } else if(p->priority >= 50 && p->priority <= 99) {
+          new_queue = 1;
+        } else if(p->priority >= 100 && p->priority <= 149) {
+          new_queue = 2;
+        }
+        
+        // 跨 queue
+        if(old_queue != new_queue && old_queue != -1 && new_queue != -1) {
+          
+          struct proclistnode *pn;
+          
+          // remove from old queue
+          if(old_queue == 0) {
+            // L3
+            if((pn = findproclist(&l3_queue, p)) != 0) {
+              removeproclist(&l3_queue, pn);
+              freeproclistnode(pn);
+            }
+          } else if(old_queue == 1) {
+            // L2
+            if((pn = findproclist(&l2_queue, p)) != 0) {
+              removeproclist(&l2_queue, pn);
+              freeproclistnode(pn);
+            }
+          } else if(old_queue == 2) {
+            // L1
+            if((pn = findproclist(&l1_queue, p)) != 0) {
+              removeproclist(&l1_queue, pn);
+              freeproclistnode(pn);
+            }
+          }
+          
+          // add to new queue
+          if((pn = allocproclistnode(p)) == 0) {
+            panic("aging: allocproclistnode");
+          }
+          
+          if(new_queue == 0) {
+            // L3
+            pushbackproclist(&l3_queue, pn);
+          } else if(new_queue == 1) {
+            // L2
+            pushsortedproclist(&l2_queue, pn);
+          } else if(new_queue == 2) {
+            // L1
+            pushsortedproclist(&l1_queue, pn);
+          }
+        }
+      }
+    }
+    
+    release(&p->lock);
+  }
 }

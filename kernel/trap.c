@@ -184,6 +184,10 @@ clockintr()
       p -> T++;
     }
   }
+
+  // implementation step 6
+  aging();
+  
   // 實作在 kernel/proc.c
   wakeup(&ticks);
   release(&tickslock);
