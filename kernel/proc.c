@@ -1266,9 +1266,13 @@ pushreadylist(struct proc *p)
   if((pn = allocproclistnode(p)) == 0) {
     panic("pushreadylist: allocproclistnode");
   }
+
+  // implementation step 5
+  struct proc *cur = myproc();
+  int should_yield = 0;
+
   // 把節點加到 ready list 的尾端
   // pushbackproclist(&readylist, pn);
-
   // 要依據 priority 決定要放在哪一個 ready queue
   if(p->priority >= 100 && p->priority <= 149) {
     // L1: priority 100-149
@@ -1276,27 +1280,47 @@ pushreadylist(struct proc *p)
 
     // implementation step 4
     // 關於 l1 內部的 preemptive
-    struct proc *cur = myproc();
-    if(cur != 0 && cur -> state == RUNNING && cur -> priority >= 100 && cur -> priority <= 149) {
-      int cur_remaining = cur -> t_i - cur -> T;
-      int new_remaining = p -> t_i - p -> T;
-
-      if(new_remaining < cur_remaining) {
-        yield(); // 現在的 process 就 yield
+    if(cur != 0 && cur -> state == RUNNING) {
+      
+      if(cur -> priority >= 100 && cur -> priority <= 149) {
+        int cur_remaining = cur -> t_i - cur -> T;
+        int new_remaining = p -> t_i - p -> T;
+        
+        // implementation step 5
+        if(new_remaining < cur_remaining) {
+          should_yield = 1; // 現在的 process 就 yield
+        }
+      }
+      else {
+        // cur 不屬於 l1 queue，可以直接搶佔
+        should_yield = 1;
       }
     }
   }
   else if(p->priority >= 50 && p->priority <= 99) {
     // L2: priority 50-99
     pushsortedproclist(&l2_queue, pn);
+
+    // implementation step 5
+    if(cur != 0 && cur -> state == RUNNING) {
+      if(cur -> priority >= 0 && cur -> priority <= 49) {
+        should_yield = 1;
+      }
+    }
   }
   else if(p->priority >= 0 && p->priority <= 49) {
     // L3: priority 0-49
     pushbackproclist(&l3_queue, pn);
+    // 不能搶佔任何人，不用判斷
   }
   else {
     // 一個保險機制
     panic("pushreadylist: pid = %d's priority = %d \n is out of range", p -> pid, p -> priority);
+  }
+
+  // implementation step 5
+  if(should_yield) {
+    yield();
   }
 }
 
