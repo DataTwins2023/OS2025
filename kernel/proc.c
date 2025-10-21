@@ -1161,7 +1161,7 @@ sizesortedproclist(struct sortedproclist *spl)
 // implementation step6 revision for find proclistnode in sorted ready proclist
 // find a proclistnode in a proclist.
 struct proclistnode*
-findsortedproclist(struct sortedproclistproclist *pl, struct proc *p)
+findsortedproclist(struct sortedproclist *pl, struct proc *p)
 {
   struct proclistnode *tmp, *pn;
   acquire(&pl->lock);
