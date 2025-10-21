@@ -591,6 +591,12 @@ scheduler(void)
     //implementation step 2
     swtch(&c -> context, &p -> context);
 
+    if(p->state == RUNNABLE) {
+      // 把它放回 queue,但忽略 yield flag
+      // 因為我們已經在 scheduler 了
+      pushreadylist(p);
+    }
+
     // Process is done running for now.
     // It should have changed its p->state before coming back.
     c->proc = 0;
@@ -643,7 +649,7 @@ yield(void)
   acquire(&p->lock);
   p->state = RUNNABLE;
   procstatelog(p);
-  pushreadylist(p);
+  // pushreadylist(p);
   sched();
   release(&p->lock);
 }
@@ -752,13 +758,15 @@ wakeup(void *chan)
   struct channel *cn; //channel指標: 用來指著對應chan的channel (對應因某個事件被轉到的SLEEPING queue:在我們的例子中為clock interrupt)
   struct proclistnode *pn; //process節點指標: 用來指著channel中被喚醒的processes的節點
 
+  int should_yield = 0;
+
   //用findchannel找到對應chan的channel 如果找不到(==0) 直接return 避免作用在非合法的channel
   if((cn = findchannel(chan)) == 0) { 
     // channel not initialized
     return;
   }
 
-  //迴圈把這個chan對應的sleeping queue上的所有processes pop出來並喚醒
+  // 迴圈把這個chan對應的sleeping queue上的所有processes pop出來並喚醒
   while((pn = popfrontproclist(&cn->pl)) != 0){
     p = pn->p;
     freeproclistnode(pn);
@@ -775,12 +783,20 @@ wakeup(void *chan)
     }
     p->state = RUNNABLE;
     procstatelog(p);
-    pushreadylist(p);
+    // 檢查是否需要 yield
+    if(pushreadylist(p)) {
+      should_yield = 1;
+    }
     release(&p->lock);
   }
   // free channel since it is empty
   cn->used = 0;
   release(&cn->lock);
+
+  // 所有鎖都釋放後才 yield
+  if(should_yield) {
+    yield();
+  }
 }
 
 // Kill the process with the given pid.
@@ -1284,75 +1300,50 @@ findchannel(void *chan)
 
 // scheduler managed, push to ready list
 // implementation step 2
-void
+int
 pushreadylist(struct proc *p)
 {
   struct proclistnode *pn;
-  // 創建一個節點來包裝 process
   if((pn = allocproclistnode(p)) == 0) {
     panic("pushreadylist: allocproclistnode");
   }
 
-  // implementation step 6
-  p -> wait_ticks = 0;
-
-  // implementation step 5
+  p->wait_ticks = 0;
+  
   struct proc *cur = myproc();
   int should_yield = 0;
 
-  // 把節點加到 ready list 的尾端
-  // pushbackproclist(&readylist, pn);
-  // 要依據 priority 決定要放在哪一個 ready queue
   if(p->priority >= 100 && p->priority <= 149) {
-    // L1: priority 100-149
     pushsortedproclist(&l1_queue, pn);
-
-    // implementation step 4
-    // 關於 l1 內部的 preemptive
-    if(cur != 0 && cur -> state == RUNNING) {
-      
-      if(cur -> priority >= 100 && cur -> priority <= 149) {
-        int cur_remaining = cur -> t_i - cur -> T;
-        int new_remaining = p -> t_i - p -> T;
-        
-        // implementation step 5
+    
+    if(cur != 0 && cur->state == RUNNING) {
+      if(cur->priority >= 100 && cur->priority <= 149) {
+        int cur_remaining = cur->t_i - cur->T;
+        int new_remaining = p->t_i - p->T;
         if(new_remaining < cur_remaining) {
-          should_yield = 1; // 現在的 process 就 yield
+          should_yield = 1;
         }
-      }
-      else {
-        // cur 不屬於 l1 queue，可以直接搶佔
+      } else {
         should_yield = 1;
       }
     }
   }
   else if(p->priority >= 50 && p->priority <= 99) {
-    // L2: priority 50-99
     pushsortedproclist(&l2_queue, pn);
-
-    // implementation step 5
-    if(cur != 0 && cur -> state == RUNNING) {
-      if(cur -> priority >= 0 && cur -> priority <= 49) {
+    if(cur != 0 && cur->state == RUNNING) {
+      if(cur->priority >= 0 && cur->priority <= 49) {
         should_yield = 1;
       }
     }
   }
   else if(p->priority >= 0 && p->priority <= 49) {
-    // L3: priority 0-49
     pushbackproclist(&l3_queue, pn);
-    // 不能搶佔任何人，不用判斷
   }
   else {
-    // 一個保險機制
-    printf("pushreadylist: pid = %d's priority = %d \n is out of range", p -> pid, p -> priority);
-    panic("pushreadylist: pid's priority is out of range");
+    panic("pushreadylist: priority out of range");
   }
-
-  // implementation step 5
-  if(should_yield) {
-    printf("should yield!\n");
-    yield();
-  }
+  
+  return should_yield;
 }
 
 // scheduler managed, pop from ready list
