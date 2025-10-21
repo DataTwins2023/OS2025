@@ -151,7 +151,7 @@ int             cmptopsortedproclist(struct sortedproclist *spl, struct proc *p)
 struct channel* allocchannel(void *chan);
 struct channel* findchannel(void *chan);
 // scheduler managed
-int            pushreadylist(struct proc *pn);
+void            pushreadylist(struct proc *pn);
 struct proc*    popreadylist();
 
 // swtch.S
