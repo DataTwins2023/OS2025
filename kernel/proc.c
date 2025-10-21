@@ -1457,7 +1457,6 @@ aging(void)
     
     // 只處理 ready queue
     if(p->state == RUNNABLE) {
-      
       p->wait_ticks++;  // 累積等待時間
       
       // 每 20 ticks 提升 priority
@@ -1497,7 +1496,7 @@ aging(void)
         
         // 跨 queue
         if(old_queue != new_queue && old_queue != -1 && new_queue != -1) {
-          
+          release(&p->lock);
           struct proclistnode *pn;
           
           // remove from old queue
@@ -1536,6 +1535,7 @@ aging(void)
             // L1
             pushsortedproclist(&l1_queue, pn);
           }
+          acquire(&p->lock);
         }
       }
     }
