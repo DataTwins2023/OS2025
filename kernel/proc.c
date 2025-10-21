@@ -1350,7 +1350,7 @@ pushreadylist(struct proc *p)
 
   // implementation step 5
   if(should_yield) {
-    printf("should yield\n");
+    printf("should yield!\n");
     yield();
   }
 }
