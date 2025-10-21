@@ -36,6 +36,7 @@ struct proclist l3_queue;
 struct sortedproclist l2_queue;
 struct sortedproclist l1_queue;
 
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -647,13 +648,6 @@ yield(void)
   release(&p->lock);
 }
 
-// Aging
-void
-aging(void)
-{
-  // Currently not implemented
-}
-
 // Implicit yield is called on timer interrupt
 void
 implicityield(void)
@@ -1164,6 +1158,35 @@ sizesortedproclist(struct sortedproclist *spl)
   return size;
 }
 
+// implementation step6 revision for find proclistnode in sorted ready proclist
+// find a proclistnode in a proclist.
+struct proclistnode*
+findsortedproclist(struct sortedproclistproclist *pl, struct proc *p)
+{
+  struct proclistnode *tmp, *pn;
+  acquire(&pl->lock);
+  pn = 0;
+  for(tmp = pl->head->next; tmp != pl->tail && pn == 0; tmp = tmp->next){
+    if(tmp->p == p){
+      pn = tmp;
+    }
+  }
+  release(&pl->lock);
+  return pn;
+}
+
+// implementation step6 revision for remove proclistnode in sorted ready proclist
+// remove a proclistnode from a proclist.
+void
+removesortedproclist(struct sortedproclist *pl, struct proclistnode *pn)
+{
+  acquire(&pl->lock);
+  pl->size--;
+  pn->prev->next = pn->next;
+  pn->next->prev = pn->prev;
+  release(&pl->lock);
+}
+
 // pop and return the first element of a sortedproclist
 // following the comparison function, or 0 if the sortedproclist is empty.
 struct proclistnode*
@@ -1321,7 +1344,8 @@ pushreadylist(struct proc *p)
   }
   else {
     // 一個保險機制
-    panic("pushreadylist: pid = %d's priority = %d \n is out of range", p -> pid, p -> priority);
+    printf("pushreadylist: pid = %d's priority = %d \n is out of range", p -> pid, p -> priority);
+    panic("pushreadylist: pid's priority is out of range");
   }
 
   // implementation step 5
@@ -1485,14 +1509,14 @@ aging(void)
             }
           } else if(old_queue == 1) {
             // L2
-            if((pn = findproclist(&l2_queue, p)) != 0) {
-              removeproclist(&l2_queue, pn);
+            if((pn = findsortedproclist(&l2_queue, p)) != 0) {
+              removesortedproclist(&l2_queue, pn);
               freeproclistnode(pn);
             }
           } else if(old_queue == 2) {
             // L1
-            if((pn = findproclist(&l1_queue, p)) != 0) {
-              removeproclist(&l1_queue, pn);
+            if((pn = findsortedproclist(&l1_queue, p)) != 0) {
+              removesortedproclist(&l1_queue, pn);
               freeproclistnode(pn);
             }
           }

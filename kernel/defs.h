@@ -115,6 +115,11 @@ void            implicityield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+
+// for l1, l2 preemption
+int l2_cmp(struct proc *p1, struct proc *p2);
+int l1_cmp(struct proc *p1, struct proc *p2);
+
 // for mp2
 void            proclog(struct proc*, int);
 void            procstatelog(struct proc*);
@@ -134,6 +139,11 @@ void            pushbackproclist(struct proclist *pl, struct proclistnode *pn);
 // sortedproclist
 void            initsortedproclist(struct sortedproclist *spl, int (*cmp)(struct proc*, struct proc*));
 int             sizesortedproclist(struct sortedproclist *spl);
+
+// implementation step6
+struct proclistnode* findsortedproclist(struct sortedproclist*, struct proc*);
+void            removesortedproclist(struct sortedproclist*, struct proclistnode*);
+
 struct proclistnode* popsortedproclist(struct sortedproclist *spl);
 void            pushsortedproclist(struct sortedproclist *spl, struct proclistnode *pn);
 int             cmptopsortedproclist(struct sortedproclist *spl, struct proc *p);
