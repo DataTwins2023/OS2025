@@ -110,6 +110,7 @@ void            userinit(void);
 int             wait(uint64);
 void            wakeup(void*);
 void            yield(void);
+// implementation step 4
 void            aging(void);
 void            implicityield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
@@ -229,3 +230,7 @@ void            virtio_disk_intr(void);
 // 宣告 l2_cmp, l1_cmp
 int l2_cmp(struct proc *p1, struct proc *p2);
 int l1_cmp(struct proc *p1, struct proc *p2);
+
+// implementation step 4
+struct proclistnode* findsortedproclist(struct sortedproclist *spl, struct proc *p);
+void removesortedproclist(struct sortedproclist *spl, struct proclistnode *pn);

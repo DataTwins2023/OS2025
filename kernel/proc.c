@@ -649,13 +649,6 @@ yield(void)
   release(&p->lock);
 }
 
-// Aging
-void
-aging(void)
-{
-  // Currently not implemented
-}
-
 // Implicit yield is called on timer interrupt
 void
 implicityield(void)
@@ -1042,6 +1035,22 @@ findproclist(struct proclist *pl, struct proc *p)
   return pn;
 }
 
+// implementation step 4
+struct proclistnode*
+findsortedproclist(struct sortedproclist *spl, struct proc *p)
+{
+  struct proclistnode *tmp, *pn;
+  acquire(&spl->lock);
+  pn = 0;
+  for(tmp = spl->head->next; tmp != spl->tail && pn == 0; tmp = tmp->next){
+    if(tmp->p == p){
+      pn = tmp;
+    }
+  }
+  release(&spl->lock);
+  return pn;
+}
+
 // remove a proclistnode from a proclist.
 void
 removeproclist(struct proclist *pl, struct proclistnode *pn)
@@ -1051,6 +1060,17 @@ removeproclist(struct proclist *pl, struct proclistnode *pn)
   pn->prev->next = pn->next;
   pn->next->prev = pn->prev;
   release(&pl->lock);
+}
+
+// implementation step 4
+void
+removesortedproclist(struct sortedproclist *spl, struct proclistnode *pn)
+{
+  acquire(&spl->lock);
+  spl->size--;
+  pn->prev->next = pn->next;
+  pn->next->prev = pn->prev;
+  release(&spl->lock);
 }
 
 // pop and return the first element of a proclist, or 0 if the proclist is empty.
@@ -1369,4 +1389,89 @@ l1_cmp(struct proc *p1, struct proc *p2)
   }
   
   return 0;
+}
+
+
+// implementation step 4
+void
+aging(void)
+{
+  struct proc *p;
+  
+  // 遍歷所有 process
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    
+    // 只處理在 ready queue 中的 process
+    if(p->state == RUNNABLE) {
+      p->wait_ticks++;
+      
+      // 每等待 20 ticks,priority +1
+      if(p->wait_ticks >= 20) {
+        p->wait_ticks = 0;
+        
+        int old_priority = p->priority;
+        p->priority++;
+        
+        // 確保 priority 不超過 149
+        if(p->priority > 149) {
+          p->priority = 149;
+        }
+        
+        // 判斷是否需要移動到不同的 queue
+        int old_queue = -1;
+        int new_queue = -1;
+        
+        if(old_priority >= 0 && old_priority <= 49) old_queue = 3;
+        else if(old_priority >= 50 && old_priority <= 99) old_queue = 2;
+        else if(old_priority >= 100 && old_priority <= 149) old_queue = 1;
+        
+        if(p->priority >= 0 && p->priority <= 49) new_queue = 3;
+        else if(p->priority >= 50 && p->priority <= 99) new_queue = 2;
+        else if(p->priority >= 100 && p->priority <= 149) new_queue = 1;
+        
+        // 如果換了 queue,需要從舊 queue 移除並加入新 queue
+        if(old_queue != new_queue) {
+          struct proclistnode *pn = 0;
+          
+          // 從舊 queue 中找到並移除
+          if(old_queue == 3) {
+            pn = findproclist(&l3_queue, p);
+            if(pn != 0) {
+              removeproclist(&l3_queue, pn);
+            }
+          } else if(old_queue == 2) {
+            pn = findsortedproclist(&l2_queue, p);
+            if(pn != 0) {
+              removesortedproclist(&l2_queue, pn);
+            }
+          } else if(old_queue == 1) {
+            pn = findsortedproclist(&l1_queue, p);
+            if(pn != 0) {
+              removesortedproclist(&l1_queue, pn);
+            }
+          }
+          
+          // 如果成功找到並移除,重新利用這個 node
+          if(pn != 0) {
+            // 重新設定 node 的內容
+            pn->p = p;
+            pn->next = 0;
+            pn->prev = 0;
+            
+            // 加入新 queue
+            if(new_queue == 3) {
+              pushbackproclist(&l3_queue, pn);
+            } else if(new_queue == 2) {
+              pushsortedproclist(&l2_queue, pn);
+            } else if(new_queue == 1) {
+              pushsortedproclist(&l1_queue, pn);
+            }
+          }
+        }
+      }
+    }
+    
+    release(&p->lock);
+  }
 }

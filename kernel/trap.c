@@ -183,12 +183,15 @@ clockintr()
       p->should_preempt = 0;  // 清除 flag
       release(&tickslock);
       yield();
+      // 沒有 return!繼續執行下面，導致重複釋放 tickslock
       return;
     }
   }
   
   // 實作在 kernel/proc.c
   wakeup(&ticks);
+  // implementation step 4
+  aging();
   release(&tickslock);
 }
 

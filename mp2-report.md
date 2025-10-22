@@ -946,3 +946,139 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
     5. 因為持有 2 個 lock，檢查不通過，觸發 `panic("sched locks")`
 
     因此，正確的做法是使用 flag (`should_preempt`) 延遲 yield，在 `clockintr` 中先釋放 `tickslock` 後再呼叫 `yield()`，確保呼叫 `sched()` 時只持有一個 lock (`myproc()->lock`)。
+
+4. 實作 aging
+    - 在 `clockintr` 中呼叫 `aging`
+        這是因為 `aging` 要在每 20 ticks 後，幫 process 提升一個 priority
+        ```c
+        void
+        clockintr()
+        {
+            .
+            .
+            .
+            // 實作在 kernel/proc.c
+            wakeup(&ticks);
+            // implementation step 4
+            aging();
+            .
+            .
+            .
+        }
+        ```
+    - 在 kernel/proc.c 中實作 `aging`
+        ```c
+        void
+        aging(void)
+        {
+            struct proc *p;
+            
+            // 遍歷所有 process
+            for(p = proc; p < &proc[NPROC]; p++) {
+                acquire(&p->lock);
+                
+                // 只處理在 ready queue 中的 process
+                if(p->state == RUNNABLE) {
+                    p->wait_ticks++;
+                    
+                    // 每等待 20 ticks,priority +1
+                    if(p->wait_ticks >= 20) {
+                        p->wait_ticks = 0;
+                        
+                        int old_priority = p->priority;
+                        p->priority++;
+                        
+                        // 確保 priority 不超過 149
+                        if(p->priority > 149) {
+                            p->priority = 149;
+                        }
+                        
+                        // 判斷是否需要移動到不同的 queue
+                        int old_queue = -1;
+                        int new_queue = -1;
+                        
+                        if(old_priority >= 0 && old_priority <= 49) old_queue = 3;
+                        else if(old_priority >= 50 && old_priority <= 99) old_queue = 2;
+                        else if(old_priority >= 100 && old_priority <= 149) old_queue = 1;
+                        
+                        if(p->priority >= 0 && p->priority <= 49) new_queue = 3;
+                        else if(p->priority >= 50 && p->priority <= 99) new_queue = 2;
+                        else if(p->priority >= 100 && p->priority <= 149) new_queue = 1;
+                        
+                        // 如果換了 queue,需要從舊 queue 移除並加入新 queue
+                        if(old_queue != new_queue) {
+                            struct proclistnode *pn = 0;
+                            
+                            // 從舊 queue 中找到並移除
+                            if(old_queue == 3) {
+                                pn = findproclist(&l3_queue, p);
+                                if(pn != 0) {
+                                    removeproclist(&l3_queue, pn);
+                                }
+                            } else if(old_queue == 2) {
+                                pn = findsortedproclist(&l2_queue, p);
+                                if(pn != 0) {
+                                    removesortedproclist(&l2_queue, pn);
+                                }
+                            } else if(old_queue == 1) {
+                                pn = findsortedproclist(&l1_queue, p);
+                                if(pn != 0) {
+                                r   emovesortedproclist(&l1_queue, pn);
+                                }
+                            }
+                            
+                            // 如果成功找到並移除,重新利用這個 node
+                            if(pn != 0) {
+                                // 重新設定 node 的內容
+                                pn->p = p;
+                                pn->next = 0;
+                                pn->prev = 0;
+                                
+                                // 加入新 queue
+                                if(new_queue == 3) {
+                                    pushbackproclist(&l3_queue, pn);
+                                } else if(new_queue == 2) {
+                                    pushsortedproclist(&l2_queue, pn);
+                                } else if(new_queue == 1) {
+                                    pushsortedproclist(&l1_queue, pn);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                release(&p->lock);
+            }
+        }
+        ```
+
+    - 在 kernel/proc.c 中實作 `findsortedproclist` 及 `removesortedproclist`
+        - `findsortedproclist`
+            ```c
+            struct proclistnode*
+            findsortedproclist(struct sortedproclist *spl, struct proc *p)
+            {
+                struct proclistnode *tmp, *pn;
+                acquire(&spl->lock);
+                pn = 0;
+                for(tmp = spl->head->next; tmp != spl->tail && pn == 0; tmp = tmp->next){
+                    if(tmp->p == p){
+                        pn = tmp;
+                    }
+                }
+                release(&spl->lock);
+                return pn;
+            }
+            ```
+        - `removesortedproclist`
+            ```c
+            void
+            removeproclist(struct proclist *pl, struct proclistnode *pn)
+            {
+                acquire(&pl->lock);
+                pl->size--;
+                pn->prev->next = pn->next;
+                pn->next->prev = pn->prev;
+                release(&pl->lock);
+            }
+            ```
