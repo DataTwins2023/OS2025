@@ -561,3 +561,139 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
 6. `Ready` -> `Running`
 - `scheduler` -> `kernel/switch.S:swtch` -> `popreadylist` -> `kernel/switch.S:swtch`
     - `scheduler` 會從 ready queue 中選出下一個要執行的 process 並修改他的狀態為 RUNNING，但目前的 scheduler 好像少了 `swtch` 動作
+
+
+## Implementation
+開始實作的部分，這邊將實作的過程分為 5 個階段
+
+1. 實作 L3
+2. 實作 L2
+3. 實作 L1
+4. 不同 Queue 間的 Preemption
+5. Aging
+
+------------------
+1. 實作 L3
+    - 在 kenrel/proc.c 中，修改 `pushreadylist` 函數
+        要修改 `pushreadylist` 的原因是，原本的系統只有一個 ready queue，但現在把它更改為三個 Level 的 ready queue，因此在 `pushreadylist` 中，需要透過 process 的 priority 決定要放入哪一個 ready queue 中，具體實作如下
+        ```c
+        int
+        pushreadylist(struct proc *p)
+        {
+        struct proclistnode *pn;
+        // 創建一個節點來包裝 process
+        if((pn = allocproclistnode(p)) == 0) {
+            panic("pushreadylist: allocproclistnode");
+        }
+        + // implementation step 1
+        + // 進入 ready queue 時初始化等待時間
+        + p->wait_ticks = 0;
+
+        + // 根據 priority 分配到對應的 queue
+        + if(p->priority >= 100 && p->priority <= 149) {
+        +     // L1 queue (先不管細節)
+        +     pushsortedproclist(&l1_queue, pn);
+        + }
+        + else if(p->priority >= 50 && p->priority <= 99) {
+        +     // L2 queue (先不管細節)
+        +     pushsortedproclist(&l2_queue, pn);
+        + }
+        + else if(p->priority >= 0 && p->priority <= 49) {
+        +     // L3 queue - Round Robin,放到尾端
+        +     pushbackproclist(&l3_queue, pn);
+        + }
+        + else {
+        +     panic("pushreadylist: priority out of range");
+        + }
+
+        + return 0;
+        }
+        ```
+        其中，我會去修改原本 `pushreadylist` 的回傳資料型態（從 `void` 修改為 `int`），這是為了之後的 preemption 行為判斷，並且因為 push 到不同的 ready_queue，所以需要先宣告這些 ready queue，所以延伸的動作是：
+        - 修改回傳資料型態，更新 kernel/defs.h 中的宣告
+        ```h
+        // scheduler managed
+        + int            pushreadylist(struct proc *pn);
+        struct proc*    popreadylist();
+        ````
+        - 宣告 ready queue
+        ```c
+        // implementation step1
+        // 新宣告 l3, l2, l1 queue
+        struct proclist l3_queue;
+        struct sortedproclist l2_queue;
+        struct sortedproclist l1_queue;
+        ```
+    - 在 kenrel/proc.c 中，修改 `popreadylist` 函數
+        要修改的地方是因為現在系統有多個 ready queue，且取出這些 ready queue 中的 process 是有順序性的，因次要進行依序的檢查，最終如果無法找到任何 process 則回傳 0，具體實作如下
+        ```c
+        // scheduler managed, pop from ready list
+        struct proc*
+        popreadylist()
+        {
+        struct proc *p;
+        struct proclistnode *pn;
+        // 優先從 L1 取 (現在先不管)
+        if((pn = popsortedproclist(&l1_queue)) != 0) {
+            p = pn->p;
+            freeproclistnode(pn);
+            return p;
+        }
+
+        // 再從 L2 取 (現在先不管)
+        if((pn = popsortedproclist(&l2_queue)) != 0) {
+            p = pn->p;
+            freeproclistnode(pn);
+            return p;
+        }
+
+        // 最後從 L3 取 - Round Robin 從頭取
+        if((pn = popfrontproclist(&l3_queue)) != 0) {
+            p = pn->p;
+            freeproclistnode(pn);
+            return p;
+        }
+        return 0;
+        }
+        ```
+    - 在 kernel/proc.c 中，修改 `implicityield` 函數
+        `implicityield` 是要決定怎樣的情況下會發生 `yield()`，而在我們目前實作 L3 ready queue 的狀況下，只有 RR（time quantam = 10 ticks）才會在 `implicityield` 中呼叫 `yield()`，實作如下
+        ```c
+        void
+        implicityield(void)
+        {
+        struct proc *p = myproc();
+        // implementation step 1
+        // 只有 L3 (priority 0-49) 需要 RR
+        + if(p->priority >= 0 && p->priority <= 49) {
+        +     // L3 要求每 10 ticks yield
+        +     if(ticks - p->startrunningticks >= 10) {
+        +     yield();
+        +     }
+        + }
+        }
+        ```
+        之後流程就會變成：
+
+        Timer interrupt 發生 -> CPU 跳到 `usertrap`/ `kerneltrap` -> 呼叫 `devintr()` 判斷中斷類型 -> 發現是 Timer interrupt -> 呼叫 `implicityield()` -> `implicityield()` 檢查是不是 L3 process 並且執行超過 10 ticks -> 成立則呼叫 `yield()` -> `scheduler` 選擇下一個 process
+    - 確認 `scheduler` 函數中有 `swtch`
+        如果沒有加入 `swtch` ， CPU 就會一直卡在 `schdeuler` 內的 for loop，系統完全無法運作
+        ```c
+        void
+        scheduler(void)
+        {
+        struct proc *p;
+        struct cpu *c = mycpu();
+        
+        c->proc = 0;
+        for(;;){
+            ...
+            
+            + // implementation step 1
+            + // 補足 scheduler 中缺少的 swtch
+            + swtch(&c->context, &p->context);
+
+            ...
+        }
+        }
+        ```

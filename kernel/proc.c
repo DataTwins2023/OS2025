@@ -31,6 +31,12 @@ struct proclist readylist;
 
 struct channel channels[NCHANNEL];
 
+// implementation step1
+// 新宣告 l3, l2, l1 queue
+struct proclist l3_queue;
+struct sortedproclist l2_queue;
+struct sortedproclist l1_queue;
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -573,6 +579,9 @@ scheduler(void)
     c->proc = p;
     procstatelog(p);
     
+    // implementation step 1
+    // 補足 scheduler 中缺少的 swtch
+    swtch(&c->context, &p->context);
 
     // Process is done running for now.
     // It should have changed its p->state before coming back.
@@ -643,10 +652,13 @@ void
 implicityield(void)
 {
   struct proc *p = myproc();
-  if(ticks - p->startrunningticks >= 1) {
-    // yield round robin scheduling
-    // actually ticks - p->startrunningticks should be 1
-    yield();
+  // implementation step 1
+  // 只有 L3 (priority 0-49) 需要 RR
+  if(p->priority >= 0 && p->priority <= 49) {
+    // L3 要求每 10 ticks yield
+    if(ticks - p->startrunningticks >= 10) {
+      yield();
+    }
   }
 }
 
@@ -917,8 +929,15 @@ proclistinit(void)
     proclistnodes[i].used = 0;
     initlock(&proclistnodes[i].lock, "proclistnode");
   }
+
   // initialize readylist.
-  initproclist(&readylist);
+  // initproclist(&readylist);
+
+  // 初始化三個 queue
+  initproclist(&l3_queue);
+  initsortedproclist(&l2_queue, 0);  // 比較函數先傳 0
+  initsortedproclist(&l1_queue, 0);  // 比較函數先傳 0
+
   // initialize channels.
   for(i = 0; i < NCHANNEL; i++){
     channels[i].used = 0;
@@ -1209,7 +1228,7 @@ findchannel(void *chan)
 }
 
 // scheduler managed, push to ready list
-void
+int
 pushreadylist(struct proc *p)
 {
   struct proclistnode *pn;
@@ -1217,8 +1236,28 @@ pushreadylist(struct proc *p)
   if((pn = allocproclistnode(p)) == 0) {
     panic("pushreadylist: allocproclistnode");
   }
-  // 把節點加到 ready list 的尾端
-  pushbackproclist(&readylist, pn);
+  // implementation step 1
+  // 進入 ready queue 時初始化等待時間
+  p->wait_ticks = 0;
+
+  // 根據 priority 分配到對應的 queue
+  if(p->priority >= 100 && p->priority <= 149) {
+    // L1 queue (先不管細節)
+    pushsortedproclist(&l1_queue, pn);
+  }
+  else if(p->priority >= 50 && p->priority <= 99) {
+    // L2 queue (先不管細節)
+    pushsortedproclist(&l2_queue, pn);
+  }
+  else if(p->priority >= 0 && p->priority <= 49) {
+    // L3 queue - Round Robin,放到尾端
+    pushbackproclist(&l3_queue, pn);
+  }
+  else {
+    panic("pushreadylist: priority out of range");
+  }
+
+  return 0;
 }
 
 // scheduler managed, pop from ready list
@@ -1227,10 +1266,25 @@ popreadylist()
 {
   struct proc *p;
   struct proclistnode *pn;
-  if((pn = popfrontproclist(&readylist)) == 0) {
-    return 0; // no runnable processes
+  // 優先從 L1 取 (現在先不管)
+  if((pn = popsortedproclist(&l1_queue)) != 0) {
+    p = pn->p;
+    freeproclistnode(pn);
+    return p;
   }
-  p = pn->p;
-  freeproclistnode(pn);
-  return p;
+
+  // 再從 L2 取 (現在先不管)
+  if((pn = popsortedproclist(&l2_queue)) != 0) {
+    p = pn->p;
+    freeproclistnode(pn);
+    return p;
+  }
+
+  // 最後從 L3 取 - Round Robin 從頭取
+  if((pn = popfrontproclist(&l3_queue)) != 0) {
+    p = pn->p;
+    freeproclistnode(pn);
+    return p;
+  }
+  return 0;
 }

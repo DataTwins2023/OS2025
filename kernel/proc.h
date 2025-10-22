@@ -109,6 +109,10 @@ struct proc {
 
   // scheduler related
   int startrunningticks;       // ticks when the process started running
+  
+  // implementation step 1
+  // 宣告 wait_ticks
+  int wait_ticks;
 };
 
 // for mp2
