@@ -168,6 +168,16 @@ clockintr()
 {
   acquire(&tickslock);
   ticks++;
+
+  // implementation step3
+  // 只有 l1 process 需要增加 T
+  struct proc *p = myproc();
+  if(p != 0 && p->state == RUNNING) {
+    if(p->priority >= 100 && p->priority <= 149) {
+      p->T++;  // 累積執行時間
+    }
+  }
+  
   // 實作在 kernel/proc.c
   wakeup(&ticks);
   release(&tickslock);

@@ -113,6 +113,10 @@ struct proc {
   // implementation step 1
   // 宣告 wait_ticks
   int wait_ticks;
+
+  // implementation step 3
+  int t_i; // 預測 burst time
+  int T; // 累積執行時間
 };
 
 // for mp2

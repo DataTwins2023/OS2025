@@ -142,6 +142,11 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // implementation step3
+  p -> t_i = 0;
+  p -> T = 0;
+  p -> wait_ticks = 0;
+
   // Allocate a trapframe page.
   // 呼叫 kalloc 分配一個 page 存放 trapframe
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -709,6 +714,13 @@ sleep(void *chan, struct spinlock *lk)
   // 釋放 tickslock
   release(lk);
 
+  // implementation step3
+  // L1 進 waiting 前更新 t_i 還有重置 T
+  if(p->priority >= 100 && p->priority <= 149) {
+    p->t_i = (p->T + p->t_i) / 2;
+    p->T = 0;
+  }
+
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
@@ -937,7 +949,7 @@ proclistinit(void)
   // 初始化三個 queue
   initproclist(&l3_queue);
   initsortedproclist(&l2_queue, l2_cmp);  // 比較函數先傳 0 後續改為 cmp function
-  initsortedproclist(&l1_queue, 0);  // 比較函數先傳 0
+  initsortedproclist(&l1_queue, l1_cmp);  // 比較函數先傳 0 後續改為 cmp function
 
   // initialize channels.
   for(i = 0; i < NCHANNEL; i++){
@@ -1313,4 +1325,31 @@ l2_cmp(struct proc *p1, struct proc *p2)
   }
 
   return 0;  // 完全相同，但不應該發生
+}
+
+// implementation step3
+// L1 cmp: remain time 短的優先,相同則 pid 小的優先
+int 
+l1_cmp(struct proc *p1, struct proc *p2)
+{
+  int p1_remaining = p1->t_i - p1->T;
+  int p2_remaining = p2->t_i - p2->T;
+
+  // 剩餘時間短的優先
+  if(p1_remaining < p2_remaining) {
+    return 1;  // p1 優先 (剩餘時間短)
+  }
+  if(p1_remaining > p2_remaining) {
+    return -1;  // p2 優先 (剩餘時間短)
+  }
+  
+  // 剩餘時間相同,pid 小的優先
+  if(p1->pid < p2->pid) {
+    return 1;  // p1 優先 (pid 小)
+  }
+  if(p1->pid > p2->pid) {
+    return -1;  // p2 優先 (pid 小)
+  }
+  
+  return 0;
 }
