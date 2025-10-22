@@ -147,6 +147,9 @@ found:
   p -> T = 0;
   p -> wait_ticks = 0;
 
+  // implementation step3
+  p -> should_preempt = 0;
+
   // Allocate a trapframe page.
   // 呼叫 kalloc 分配一個 page 存放 trapframe
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -1252,11 +1255,25 @@ pushreadylist(struct proc *p)
   // implementation step 1
   // 進入 ready queue 時初始化等待時間
   p->wait_ticks = 0;
+  // implementation step 3
+  // 為了等下設定 current process 需不需要 yield
+  struct proc *cur = myproc();
 
   // 根據 priority 分配到對應的 queue
   if(p->priority >= 100 && p->priority <= 149) {
     // L1 queue (先不管細節)
     pushsortedproclist(&l1_queue, pn);
+
+    // implementation step 3
+    // L1 內部 preemption 檢查
+    if(cur != 0 && cur->state == RUNNING && cur->priority >= 100 && cur->priority <= 149) {
+      int cur_remaining = cur->t_i - cur->T;
+      int new_remaining = p->t_i - p->T;
+      
+      if(new_remaining < cur_remaining) {
+        cur -> should_preempt = 1;
+      }
+    }
   }
   else if(p->priority >= 50 && p->priority <= 99) {
     // L2 queue (先不管細節)
@@ -1337,18 +1354,18 @@ l1_cmp(struct proc *p1, struct proc *p2)
 
   // 剩餘時間短的優先
   if(p1_remaining < p2_remaining) {
-    return 1;  // p1 優先 (剩餘時間短)
+    return 1;
   }
   if(p1_remaining > p2_remaining) {
-    return -1;  // p2 優先 (剩餘時間短)
+    return -1;
   }
   
   // 剩餘時間相同,pid 小的優先
   if(p1->pid < p2->pid) {
-    return 1;  // p1 優先 (pid 小)
+    return 1;
   }
   if(p1->pid > p2->pid) {
-    return -1;  // p2 優先 (pid 小)
+    return -1;
   }
   
   return 0;

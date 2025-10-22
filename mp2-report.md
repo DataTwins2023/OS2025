@@ -792,3 +792,157 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
         + int l2_cmp(struct proc *p1, struct proc *p2);
         + int l1_cmp(struct proc *p1, struct proc *p2);
         ```
+
+3. 實作 L1
+    - 在 kernel/proc.h 中，proc struct 中新增一個 `should_preempt` 的 flag
+        ```h
+        struct proc {
+            struct spinlock lock;
+            .
+            .
+            .
+            // implementation step 3
+            int t_i; // 預測 burst time
+            int T; // 累積執行時間
+
+            // implementation step 3
+            int should_preempt;
+        };
+        ```
+    - 在 kernel/proc.c 中，實作 `l1_cmp` 函數
+        ```c
+        int 
+        l1_cmp(struct proc *p1, struct proc *p2)
+        {
+            int p1_remaining = p1->t_i - p1->T;
+            int p2_remaining = p2->t_i - p2->T;
+
+            // 剩餘時間短的優先
+            if(p1_remaining < p2_remaining) {
+                return 1;
+            }
+            if(p1_remaining > p2_remaining) {
+                return -1;
+            }
+            
+            // 剩餘時間相同,pid 小的優先
+            if(p1->pid < p2->pid) {
+                return 1;
+            }
+            if(p1->pid > p2->pid) {
+                return -1;
+            }
+            
+            return 0;
+        }
+        ```
+
+    - 在 kernel/proc.c 中， `proclistinit` 把 `l1_cmp` 放入 `initsortedproclist`
+        ```c
+        initsortedproclist(&l1_queue, l1_cmp);
+        ```
+    
+    - 修改 `pushreadylist()` 新增 L1 內部 preemption 檢查
+        ```c
+        // implementation step 3
+        // L1 內部 preemption 檢查
+        if(cur != 0 && cur->state == RUNNING && cur->priority >= 100 && cur->priority <= 149) {
+            int cur_remaining = cur->t_i - cur->T;
+            int new_remaining = p->t_i - p->T;
+            
+            if(new_remaining < cur_remaining) {
+                cur -> should_preempt = 1;
+            }
+        }
+        ```
+
+    - 在 kernel/proc.c 中 `allocproc` 函式新增初始化 `t_i`, `T`, `wait_ticks` 以及 `should_preempt` 的部分
+        ```c
+        static struct proc*
+        allocproc(void)
+        {
+            struct proc *p;
+            .
+            .
+            .
+            found:
+            // 分配 pid 並設定狀態
+            p->pid = allocpid();
+            p->state = USED;
+
+            // implementation step3
+            p -> t_i = 0;
+            p -> T = 0;
+            p -> wait_ticks = 0;
+
+            // implementation step3
+            p -> should_preempt = 0;
+            .
+            .
+            .
+        }
+        ```
+    - 在 kernel/proc.c 中 `sleep` 函式新增更新 `t_i` 及重置 `T` 的部分
+        ```c
+        void
+        sleep(void *chan, struct spinlock *lk)
+        {
+            .
+            .
+            .
+            // implementation step3
+            // L1 進 waiting 前更新 t_i 還有重置 T
+            if(p->priority >= 100 && p->priority <= 149) {
+                p->t_i = (p->T + p->t_i) / 2;
+                p->T = 0;
+            }
+            .
+            .
+            .
+        }
+        ```
+
+    - 修改 kernel/trap.c 的 `clockintr`，在 timer interrupt 中除了更新 l1 process 的 `T` 還要看這個 process 是否需要呼叫 `yield`，也就是是否會被插隊
+        ```c
+        void
+        clockintr()
+        {
+            acquire(&tickslock);
+            ticks++;
+
+            // implementation step3
+            // 只有 l1 process 需要增加 T
+            struct proc *p = myproc();
+            if(p != 0 && p->state == RUNNING) {
+                if(p->priority >= 100 && p->priority <= 149) {
+                p->T++;  // 累積執行時間
+                }
+
+                // implementation step 3
+                // 如果需要被 preempt 那在這邊放棄
+                if(p -> should_preempt) {
+                p->should_preempt = 0;  // 清除 flag
+                release(&tickslock);
+                yield();
+                return;
+                }
+            }
+            .
+            .
+            .
+        }
+        ```
+    原本有一個想法是在 wakeup 函數中透過 `pushreadylist` 回傳的數值決定要不要執行 `yield()`，但這樣會出現 sched locks 的 panic 訊息。原因是:
+    1. `wakeup` 通常是被 `clockintr` 呼叫
+
+    2. `clockintr` 在呼叫 `wakeup` 之前已經持有 `tickslock`
+
+    3. 如果在 `wakeup` 中呼叫 `yield()`，會發生:
+        - `yield()` 內部會 `acquire(&myproc()->lock)`
+        - 此時同時持有 `tickslock` 和 `myproc()->lock` 兩個 lock
+
+    4. 當 `yield()` 呼叫 `sched()` 時，`sched()` 會檢查 `mycpu()->noff` (持有的 lock 數量)
+
+    5. 因為持有 2 個 lock，檢查不通過，觸發 `panic("sched locks")`
+
+    因此，正確的做法是使用 flag (`should_preempt`) 延遲 yield，在 `clockintr` 中先釋放 `tickslock` 後再呼叫 `yield()`，確保呼叫 `sched()` 時只持有一個 lock (`myproc()->lock`)。

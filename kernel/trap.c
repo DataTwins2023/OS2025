@@ -176,6 +176,15 @@ clockintr()
     if(p->priority >= 100 && p->priority <= 149) {
       p->T++;  // 累積執行時間
     }
+
+    // implementation step 3
+    // 如果需要被 preempt 那在這邊放棄
+    if(p -> should_preempt) {
+      p->should_preempt = 0;  // 清除 flag
+      release(&tickslock);
+      yield();
+      return;
+    }
   }
   
   // 實作在 kernel/proc.c
