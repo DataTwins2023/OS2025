@@ -37,6 +37,7 @@ struct proclist l3_queue;
 struct sortedproclist l2_queue;
 struct sortedproclist l1_queue;
 
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -935,7 +936,7 @@ proclistinit(void)
 
   // 初始化三個 queue
   initproclist(&l3_queue);
-  initsortedproclist(&l2_queue, 0);  // 比較函數先傳 0
+  initsortedproclist(&l2_queue, l2_cmp);  // 比較函數先傳 0
   initsortedproclist(&l1_queue, 0);  // 比較函數先傳 0
 
   // initialize channels.
@@ -1287,4 +1288,29 @@ popreadylist()
     return p;
   }
   return 0;
+}
+
+
+// implementation step2
+// L2 cmp: priority 高的優先,相同則 pid 小的優先
+int 
+l2_cmp(struct proc *p1, struct proc *p2)
+{
+  // Priority 大的優先
+  if(p1->priority > p2->priority) {
+    return 1;  // p1 優先
+  }
+  if(p1->priority < p2->priority) {
+    return -1;  // p2 優先
+  }
+
+  // Priority 相同,pid 小的優先
+  if(p1->pid < p2->pid) {
+    return 1;  // p1 優先 (pid 小)
+  }
+  if(p1->pid > p2->pid) {
+    return -1;  // p2 優先 (pid 小)
+  }
+
+  return 0;  // 完全相同，但不應該發生
 }

@@ -224,3 +224,8 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+// implementation step2
+// 宣告 l2_cmp, l1_cmp
+int l2_cmp(struct proc *p1, struct proc *p2);
+int l1_cmp(struct proc *p1, struct proc *p2);
