@@ -936,7 +936,7 @@ proclistinit(void)
 
   // 初始化三個 queue
   initproclist(&l3_queue);
-  initsortedproclist(&l2_queue, l2_cmp);  // 比較函數先傳 0
+  initsortedproclist(&l2_queue, l2_cmp);  // 比較函數先傳 0 後續改為 cmp function
   initsortedproclist(&l1_queue, 0);  // 比較函數先傳 0
 
   // initialize channels.

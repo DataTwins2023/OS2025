@@ -609,7 +609,7 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
         + return 0;
         }
         ```
-        其中，我會去修改原本 `pushreadylist` 的回傳資料型態（從 `void` 修改為 `int`），這是為了之後的 preemption 行為判斷，並且因為 push 到不同的 ready_queue，所以需要先宣告這些 ready queue，所以延伸的動作是：
+        其中，我會去修改原本 `pushreadylist` 的回傳資料型態（從 `void` 修改為 `int`），這是為了之後的 preemption 行為判斷，並且因為 push 到不同的 ready_queue，所以需要先宣告這些 ready queue，且要修正 `proclistinit` 函數，所以延伸的動作是：
         - 修改回傳資料型態，更新 kernel/defs.h 中的宣告
         ```h
         // scheduler managed
@@ -623,6 +623,34 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
         struct proclist l3_queue;
         struct sortedproclist l2_queue;
         struct sortedproclist l1_queue;
+        ```
+        - 修改 `proclistinit` 中的行為
+        ```c
+        void
+        proclistinit(void)
+        {
+        int i;
+        // initialize proclistnodes.
+        for(i = 0; i < NPROCLISTNODE; i++){
+            proclistnodes[i].used = 0;
+            initlock(&proclistnodes[i].lock, "proclistnode");
+        }
+
+        // initialize readylist.
+        // initproclist(&readylist);
+
+        // 初始化三個 queue
+        + initproclist(&l3_queue);
+        + initsortedproclist(&l2_queue, 0);  // 比較函數先傳 0
+        + initsortedproclist(&l1_queue, 0);  // 比較函數先傳 0
+
+        // initialize channels.
+        for(i = 0; i < NCHANNEL; i++){
+            channels[i].used = 0;
+            initproclist(&channels[i].pl);
+            initlock(&channels[i].lock, "channel");
+        }
+        }
         ```
     - 在 kenrel/proc.c 中，修改 `popreadylist` 函數
         要修改的地方是因為現在系統有多個 ready queue，且取出這些 ready queue 中的 process 是有順序性的，因次要進行依序的檢查，最終如果無法找到任何 process 則回傳 0，具體實作如下
@@ -696,4 +724,71 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
             ...
         }
         }
+        ```
+2. 實作 L2
+    - 在 kenrel/proc.c 中，實作 `l2_cmp` 函數
+        ```c
+        // implementation step2
+        // L2 cmp: priority 高的優先,相同則 pid 小的優先
+        int 
+        l2_cmp(struct proc *p1, struct proc *p2)
+        {
+            // Priority 大的優先
+            if(p1->priority > p2->priority) {
+                return 1;  // p1 優先
+            }
+            if(p1->priority < p2->priority) {
+                return -1;  // p2 優先
+            }
+
+            // Priority 相同,pid 小的優先
+            if(p1->pid < p2->pid) {
+                return 1;  // p1 優先 (pid 小)
+            }
+            if(p1->pid > p2->pid) {
+                return -1;  // p2 優先 (pid 小)
+            }
+
+            return 0;  // 完全相同，但不應該發生
+        }
+        ```
+    - 在 kernel/proc.c 中， `proclistinit` 把 `l2_cmp` 放入 `initsortedproclist`
+        ```c
+        // initialize process list related data structures.
+        void
+        proclistinit(void)
+        {
+            int i;
+            // initialize proclistnodes.
+            for(i = 0; i < NPROCLISTNODE; i++){
+                proclistnodes[i].used = 0;
+                initlock(&proclistnodes[i].lock, "proclistnode");
+            }
+
+            // initialize readylist.
+            // initproclist(&readylist);
+
+            // 初始化三個 queue
+            initproclist(&l3_queue);
+            initsortedproclist(&l2_queue, l2_cmp);  // 比較函數先傳 0 後續改為 cmp function
+            initsortedproclist(&l1_queue, 0);  // 比較函數先傳 0
+
+            // initialize channels.
+            for(i = 0; i < NCHANNEL; i++){
+                channels[i].used = 0;
+                initproclist(&channels[i].pl);
+                initlock(&channels[i].lock, "channel");
+            }
+        }
+        ```
+        原先 cmp 函數會先傳 0，是因為我們還沒實作，實作後就可以改為正確的 cmp 函數
+    - 在 kernel/defs.h 中宣告 `l2_cmp` 及 `l1_cmp` 函數
+        ```h
+        // number of elements in fixed-size array
+        #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+        // implementation step2
+        // 宣告 l2_cmp, l1_cmp
+        + int l2_cmp(struct proc *p1, struct proc *p2);
+        + int l1_cmp(struct proc *p1, struct proc *p2);
         ```
