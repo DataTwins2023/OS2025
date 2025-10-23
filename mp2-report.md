@@ -569,8 +569,8 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
 1. 實作 L3
 2. 實作 L2
 3. 實作 L1
-4. 不同 Queue 間的 Preemption
-5. Aging
+4. Aging
+5. 不同 Queue 間的 Preemption
 
 ------------------
 1. 實作 L3
@@ -1082,3 +1082,10 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
                 release(&pl->lock);
             }
             ```
+
+    - 在 kernel/defs.h 中宣告 `findsortedproclist` 及 `removesortedproclist`
+        ```c
+        // implementation step 4
+        struct proclistnode* findsortedproclist(struct sortedproclist *spl, struct proc *p);
+        void removesortedproclist(struct sortedproclist *spl, struct proclistnode *pn);
+        ```
