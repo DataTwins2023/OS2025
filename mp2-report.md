@@ -560,7 +560,16 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
 
 6. `Ready` -> `Running`
 - `scheduler` -> `kernel/switch.S:swtch` -> `popreadylist` -> `kernel/switch.S:swtch`
-    - `scheduler` 會從 ready queue 中選出下一個要執行的 process 並修改他的狀態為 RUNNING，但目前的 scheduler 好像少了 `swtch` 動作
+    
+    - 這個狀態轉換是描述 scheduler 如何從 ready queue 中選出下一個要執行的 process，並且讓它開始執行。
+    
+    - 第一個 swtch 代表的是從前一個 process（old process）切換回 scheduler
+
+        - 完整流程是當某個 process 要放棄 CPU 時會透過 yield()，而 yield() 中會再透過 swtch 使 CPU 重新回到 scheduler 中繼續進行
+
+    - 在 scheduler 中會做的事情在上面有提過
+
+    - 第二個 swtch 是從 scheduler 切換到被選中的 process
 
 
 ## Implementation
@@ -1089,3 +1098,70 @@ Ans: 可以想成 usertrap 會觸發 mode 改變，進到 kernel mode 後 user �
         struct proclistnode* findsortedproclist(struct sortedproclist *spl, struct proc *p);
         void removesortedproclist(struct sortedproclist *spl, struct proclistnode *pn);
         ```
+
+
+5. 實作不同 Queue 間的 Preemption
+    - 修改 `pushreadylist` ，要加入跨 queue 的 preemption，具體做法是：
+        1. 如果新加入的 process 是 level 1，則若現在執行的 process 是：
+            - level 1：跑 l1 的 preemption，前面已經實作過
+            - level 2, 3：l1 可以搶佔，把現在執行的 process 給定 should_preempt 標記
+                ```c
+                // 根據 priority 分配到對應的 queue
+                if(p->priority >= 100 && p->priority <= 149) {
+                    // L1 queue (先不管細節)
+                    pushsortedproclist(&l1_queue, pn);
+
+                    // implementation step 3
+                    // L1 內部 preemption 檢查
+                    if(cur != 0 && cur->state == RUNNING && cur->priority >= 100 && cur->priority <= 149) {
+                        int cur_remaining = cur->t_i - cur->T;
+                        int new_remaining = p->t_i - p->T;
+                        
+                        if(new_remaining < cur_remaining) {
+                            cur -> should_preempt = 1;
+                        }
+                    }
+                    
+                    // implementation step 5
+                    // L1 搶佔 L2 或 L3
+                    if(cur != 0 && cur->state == RUNNING && cur->priority < 100) {
+                        cur -> should_preempt = 1;
+                    }
+                }
+                ```
+        2. 如果新加入的 process 是 level 2，則若現在執行的 process 是：
+            - 只有當現在執行的 process 是 l3 才能搶佔
+                ```c
+                else if(p->priority >= 50 && p->priority <= 99) {
+                    pushsortedproclist(&l2_queue, pn);
+                    // implementation step 5
+                    // L2 搶佔 L3
+                    if(cur != 0 && cur->state == RUNNING && cur->priority < 50) {
+                        cur -> should_preempt = 1;
+                    }
+                }
+                ```
+    - 修改 `aging` 函數，新增如果跨 queue 會發生 preemption 的情況：
+        1. 如果透過 `aging` 升級到 l2，則要比較現在執行的 process 是否為 l3
+            ```c
+            if(new_queue == 2 && cur->priority < 50) {
+                cur->should_preempt = 1;
+            }
+            ```
+        2. 如果透過 `aging` 升級到 l1，則要比較現在執行的 process
+            - 若現在執行的 process 是 l2 或 l3，則可以直接進行搶佔
+                ```c
+                else if(new_queue == 1 && cur->priority < 100) {
+                  cur->should_preempt = 1;
+                }
+                ```
+            - 若現在執行的 process 是 l1 則要比對剩餘時間
+                ```c
+                else if(new_queue == 1 && cur->priority >= 100 && cur->priority <= 149) {
+                  int cur_remaining = cur->t_i - cur->T;
+                  int new_remaining = p->t_i - p->T;
+                  if(new_remaining < cur_remaining) {
+                    cur->should_preempt = 1;
+                  }
+                }
+                ```

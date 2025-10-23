@@ -1294,10 +1294,20 @@ pushreadylist(struct proc *p)
         cur -> should_preempt = 1;
       }
     }
+    
+    // implementation step 5
+    // L1 搶佔 L2 或 L3
+    if(cur != 0 && cur->state == RUNNING && cur->priority < 100) {
+      cur -> should_preempt = 1;
+    }
   }
   else if(p->priority >= 50 && p->priority <= 99) {
-    // L2 queue (先不管細節)
     pushsortedproclist(&l2_queue, pn);
+    // implementation step 5
+    // L2 搶佔 L3
+    if(cur != 0 && cur->state == RUNNING && cur->priority < 50) {
+      cur -> should_preempt = 1;
+    }
   }
   else if(p->priority >= 0 && p->priority <= 49) {
     // L3 queue - Round Robin,放到尾端
@@ -1397,6 +1407,8 @@ void
 aging(void)
 {
   struct proc *p;
+  // implementation step 5
+  struct proc *cur = myproc();
   
   // 遍歷所有 process
   for(p = proc; p < &proc[NPROC]; p++) {
@@ -1466,6 +1478,29 @@ aging(void)
               pushsortedproclist(&l2_queue, pn);
             } else if(new_queue == 1) {
               pushsortedproclist(&l1_queue, pn);
+            }
+
+            // 檢查是否需要 preempt 當前執行的 process
+            if(cur != 0 && cur->state == RUNNING) {
+              // 如果升級到更高的 queue,檢查是否需要搶佔
+              if(new_queue < old_queue) {  // queue 編號越小優先級越高
+                // L3 → L2: 搶佔 L3
+                if(new_queue == 2 && cur->priority < 50) {
+                  cur->should_preempt = 1;
+                }
+                // L3 → L1 或 L2 → L1: 搶佔 L2 或 L3
+                else if(new_queue == 1 && cur->priority < 100) {
+                  cur->should_preempt = 1;
+                }
+                // L1 內部還需檢查剩餘時間
+                else if(new_queue == 1 && cur->priority >= 100 && cur->priority <= 149) {
+                  int cur_remaining = cur->t_i - cur->T;
+                  int new_remaining = p->t_i - p->T;
+                  if(new_remaining < cur_remaining) {
+                    cur->should_preempt = 1;
+                  }
+                }
+              }
             }
           }
         }
