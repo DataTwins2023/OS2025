@@ -110,6 +110,7 @@ void            userinit(void);
 int             wait(uint64);
 void            wakeup(void*);
 void            yield(void);
+// implementation step 4
 void            aging(void);
 void            implicityield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
@@ -151,7 +152,7 @@ int             cmptopsortedproclist(struct sortedproclist *spl, struct proc *p)
 struct channel* allocchannel(void *chan);
 struct channel* findchannel(void *chan);
 // scheduler managed
-void            pushreadylist(struct proc *pn);
+int            pushreadylist(struct proc *pn);
 struct proc*    popreadylist();
 
 // swtch.S
@@ -234,3 +235,12 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+// implementation step2
+// 宣告 l2_cmp, l1_cmp
+int l2_cmp(struct proc *p1, struct proc *p2);
+int l1_cmp(struct proc *p1, struct proc *p2);
+
+// implementation step 4
+struct proclistnode* findsortedproclist(struct sortedproclist *spl, struct proc *p);
+void removesortedproclist(struct sortedproclist *spl, struct proclistnode *pn);

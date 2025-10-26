@@ -32,6 +32,10 @@ struct proclist readylist;
 struct channel channels[NCHANNEL];
 
 // implementation step1
+<<<<<<< HEAD
+=======
+// 新宣告 l3, l2, l1 queue
+>>>>>>> branch-implementation
 struct proclist l3_queue;
 struct sortedproclist l2_queue;
 struct sortedproclist l1_queue;
@@ -140,6 +144,14 @@ found:
   // 分配 pid 並設定狀態
   p->pid = allocpid();
   p->state = USED;
+
+  // implementation step3
+  p -> t_i = 0;
+  p -> T = 0;
+  p -> wait_ticks = 0;
+
+  // implementation step3
+  p -> should_preempt = 0;
 
   // Allocate a trapframe page.
   // 呼叫 kalloc 分配一個 page 存放 trapframe
@@ -588,8 +600,14 @@ scheduler(void)
     c->proc = p;
     procstatelog(p);
     
+<<<<<<< HEAD
     //implementation step 2
     swtch(&c -> context, &p -> context);
+=======
+    // implementation step 1
+    // 補足 scheduler 中缺少的 swtch
+    swtch(&c->context, &p->context);
+>>>>>>> branch-implementation
 
     // Process is done running for now.
     // It should have changed its p->state before coming back.
@@ -653,6 +671,7 @@ void
 implicityield(void)
 {
   struct proc *p = myproc();
+<<<<<<< HEAD
   // if(ticks - p->startrunningticks >= 1) {
     // yield round robin scheduling
     // actually ticks - p->startrunningticks should be 1
@@ -662,6 +681,12 @@ implicityield(void)
   // 先確認 process 是不是在 l3
   if(p -> priority >= 0 && p -> priority <= 49) {
     // l3 是要求 10 個 ticks
+=======
+  // implementation step 1
+  // 只有 L3 (priority 0-49) 需要 RR
+  if(p->priority >= 0 && p->priority <= 49) {
+    // L3 要求每 10 ticks yield
+>>>>>>> branch-implementation
     if(ticks - p->startrunningticks >= 10) {
       yield();
     }
@@ -719,6 +744,13 @@ sleep(void *chan, struct spinlock *lk)
   if(p -> priority >= 100 && p -> priority <= 149) {
     p -> t_i = (p -> T + p -> t_i) / 2;
     p -> T = 0; // 重置 T
+  }
+
+  // implementation step3
+  // L1 進 waiting 前更新 t_i 還有重置 T
+  if(p->priority >= 100 && p->priority <= 149) {
+    p->t_i = (p->T + p->t_i) / 2;
+    p->T = 0;
   }
 
   // Go to sleep.
@@ -949,8 +981,18 @@ proclistinit(void)
     // 每個鎖給同樣的名字沒問題，因為這只是用來 debug 的，實際上還是看鎖的 記憶體位址
     initlock(&proclistnodes[i].lock, "proclistnode");
   }
+
   // initialize readylist.
   // initproclist(&readylist);
+<<<<<<< HEAD
+=======
+
+  // 初始化三個 queue
+  initproclist(&l3_queue);
+  initsortedproclist(&l2_queue, l2_cmp);  // 比較函數先傳 0 後續改為 cmp function
+  initsortedproclist(&l1_queue, l1_cmp);  // 比較函數先傳 0 後續改為 cmp function
+
+>>>>>>> branch-implementation
   // initialize channels.
   // implementation step 1
   // 原本只初始化 readylist
@@ -1052,6 +1094,22 @@ findproclist(struct proclist *pl, struct proc *p)
   return pn;
 }
 
+// implementation step 4
+struct proclistnode*
+findsortedproclist(struct sortedproclist *spl, struct proc *p)
+{
+  struct proclistnode *tmp, *pn;
+  acquire(&spl->lock);
+  pn = 0;
+  for(tmp = spl->head->next; tmp != spl->tail && pn == 0; tmp = tmp->next){
+    if(tmp->p == p){
+      pn = tmp;
+    }
+  }
+  release(&spl->lock);
+  return pn;
+}
+
 // remove a proclistnode from a proclist.
 void
 removeproclist(struct proclist *pl, struct proclistnode *pn)
@@ -1061,6 +1119,17 @@ removeproclist(struct proclist *pl, struct proclistnode *pn)
   pn->prev->next = pn->next;
   pn->next->prev = pn->prev;
   release(&pl->lock);
+}
+
+// implementation step 4
+void
+removesortedproclist(struct sortedproclist *spl, struct proclistnode *pn)
+{
+  acquire(&spl->lock);
+  spl->size--;
+  pn->prev->next = pn->next;
+  pn->next->prev = pn->prev;
+  release(&spl->lock);
 }
 
 // pop and return the first element of a proclist, or 0 if the proclist is empty.
@@ -1283,8 +1352,7 @@ findchannel(void *chan)
 }
 
 // scheduler managed, push to ready list
-// implementation step 2
-void
+int
 pushreadylist(struct proc *p)
 {
   struct proclistnode *pn;
@@ -1292,67 +1360,52 @@ pushreadylist(struct proc *p)
   if((pn = allocproclistnode(p)) == 0) {
     panic("pushreadylist: allocproclistnode");
   }
-
-  // implementation step 6
-  p -> wait_ticks = 0;
-
-  // implementation step 5
+  // implementation step 1
+  // 進入 ready queue 時初始化等待時間
+  p->wait_ticks = 0;
+  // implementation step 3
+  // 為了等下設定 current process 需不需要 yield
   struct proc *cur = myproc();
-  int should_yield = 0;
 
-  // 把節點加到 ready list 的尾端
-  // pushbackproclist(&readylist, pn);
-  // 要依據 priority 決定要放在哪一個 ready queue
+  // 根據 priority 分配到對應的 queue
   if(p->priority >= 100 && p->priority <= 149) {
-    // L1: priority 100-149
+    // L1 queue (先不管細節)
     pushsortedproclist(&l1_queue, pn);
 
-    // implementation step 4
-    // 關於 l1 內部的 preemptive
-    if(cur != 0 && cur -> state == RUNNING) {
+    // implementation step 3
+    // L1 內部 preemption 檢查
+    if(cur != 0 && cur->state == RUNNING && cur->priority >= 100 && cur->priority <= 149) {
+      int cur_remaining = cur->t_i - cur->T;
+      int new_remaining = p->t_i - p->T;
       
-      if(cur -> priority >= 100 && cur -> priority <= 149) {
-        int cur_remaining = cur -> t_i - cur -> T;
-        int new_remaining = p -> t_i - p -> T;
-        
-        // implementation step 5
-        if(new_remaining < cur_remaining) {
-          should_yield = 1; // 現在的 process 就 yield
-        }
+      if(new_remaining < cur_remaining) {
+        cur -> should_preempt = 1;
       }
-      else {
-        // cur 不屬於 l1 queue，可以直接搶佔
-        should_yield = 1;
-      }
+    }
+    
+    // implementation step 5
+    // L1 搶佔 L2 或 L3
+    if(cur != 0 && cur->state == RUNNING && cur->priority < 100) {
+      cur -> should_preempt = 1;
     }
   }
   else if(p->priority >= 50 && p->priority <= 99) {
-    // L2: priority 50-99
     pushsortedproclist(&l2_queue, pn);
-
     // implementation step 5
-    if(cur != 0 && cur -> state == RUNNING) {
-      if(cur -> priority >= 0 && cur -> priority <= 49) {
-        should_yield = 1;
-      }
+    // L2 搶佔 L3
+    if(cur != 0 && cur->state == RUNNING && cur->priority < 50) {
+      cur -> should_preempt = 1;
     }
   }
   else if(p->priority >= 0 && p->priority <= 49) {
-    // L3: priority 0-49
+    // L3 queue - Round Robin,放到尾端
     pushbackproclist(&l3_queue, pn);
-    // 不能搶佔任何人，不用判斷
   }
   else {
-    // 一個保險機制
-    printf("pushreadylist: pid = %d's priority = %d \n is out of range", p -> pid, p -> priority);
-    panic("pushreadylist: pid's priority is out of range");
+    panic("pushreadylist: priority out of range");
   }
 
-  // implementation step 5
-  if(should_yield) {
-    printf("should yield\n");
-    yield();
-  }
+  return 0;
 }
 
 // scheduler managed, pop from ready list
@@ -1362,181 +1415,183 @@ popreadylist()
 {
   struct proc *p;
   struct proclistnode *pn;
-  /*
-  if((pn = popfrontproclist(&readylist)) == 0) {
-    return 0; // no runnable processes
-  }
-  p = pn->p;
-  freeproclistnode(pn);
-  return p;
-  */
-
-  // 優先從 l1 取
+  // 優先從 L1 取 (現在先不管)
   if((pn = popsortedproclist(&l1_queue)) != 0) {
-    p = pn ->p ;
+    p = pn->p;
     freeproclistnode(pn);
     return p;
   }
 
-  // l1 沒了就從 l2 取
+  // 再從 L2 取 (現在先不管)
   if((pn = popsortedproclist(&l2_queue)) != 0) {
-    p = pn ->p ;
+    p = pn->p;
     freeproclistnode(pn);
     return p;
   }
 
-  // l2 沒了就從 l3 取
+  // 最後從 L3 取 - Round Robin 從頭取
   if((pn = popfrontproclist(&l3_queue)) != 0) {
-    p = pn ->p ;
+    p = pn->p;
     freeproclistnode(pn);
     return p;
   }
-
-  // 三個 queue 都沒有
   return 0;
 }
 
 
-// implementation step3
+// implementation step2
+// L2 cmp: priority 高的優先,相同則 pid 小的優先
 int 
 l2_cmp(struct proc *p1, struct proc *p2)
 {
-  if(p1 -> priority > p2 -> priority) {
-    return 1;
+  // Priority 大的優先
+  if(p1->priority > p2->priority) {
+    return 1;  // p1 優先
   }
-  if(p1 -> priority < p2 -> priority) {
-    return -1;
-  }
-
-  // p1 -> priority == p2 -> priority
-  if(p1 -> pid < p2 -> pid) {
-    return 1; // p1 id 小 優先
-  }
-  if(p1 -> pid > p2 -> pid) {
-    return -1; // p1 id 小 優先
+  if(p1->priority < p2->priority) {
+    return -1;  // p2 優先
   }
 
-  return 0;
-}
-
-// implementation step4
-int
-l1_cmp(struct proc *p1, struct proc *p2)
-{
-  int p1_remaining_t = p1 -> t_i - p1 -> T;
-  int p2_remaining_t = p2 -> t_i - p2 -> T;
-
-  // Rule 1: Shorter remaining time first
-  if(p1_remaining_t < p2_remaining_t) {
-    return 1;  // p1 剩餘時間短 優先
-  }
-  if(p1_remaining_t > p2_remaining_t) {
-    return -1;  // p2 剩餘時間短 優先
-  }
-  
-  // Rule 2: Same remaining time, smaller pid first
+  // Priority 相同,pid 小的優先
   if(p1->pid < p2->pid) {
-    return 1;  // p1 id 小 優先
+    return 1;  // p1 優先 (pid 小)
   }
   if(p1->pid > p2->pid) {
-    return -1;  // p2 id 小 優先
+    return -1;  // p2 優先 (pid 小)
+  }
+
+  return 0;  // 完全相同，但不應該發生
+}
+
+// implementation step3
+// L1 cmp: remain time 短的優先,相同則 pid 小的優先
+int 
+l1_cmp(struct proc *p1, struct proc *p2)
+{
+  int p1_remaining = p1->t_i - p1->T;
+  int p2_remaining = p2->t_i - p2->T;
+
+  // 剩餘時間短的優先
+  if(p1_remaining < p2_remaining) {
+    return 1;
+  }
+  if(p1_remaining > p2_remaining) {
+    return -1;
+  }
+  
+  // 剩餘時間相同,pid 小的優先
+  if(p1->pid < p2->pid) {
+    return 1;
+  }
+  if(p1->pid > p2->pid) {
+    return -1;
   }
   
   return 0;
 }
 
-// implementation step 6
-// 實作一個 aging 函數
-// Aging
+
+// implementation step 4
 void
 aging(void)
 {
   struct proc *p;
+  // implementation step 5
+  struct proc *cur = myproc();
   
+  // 遍歷所有 process
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     
-    // 只處理 ready queue
+    // 只處理在 ready queue 中的 process
     if(p->state == RUNNABLE) {
-      p->wait_ticks++;  // 累積等待時間
+      p->wait_ticks++;
       
-      // 每 20 ticks 提升 priority
+      // 每等待 20 ticks,priority +1
       if(p->wait_ticks >= 20) {
-        
-        int old_priority = p->priority;
-        
-        // 上限 149
-        if(p->priority < 149) {
-          p->priority++;
-        }
-        
-        // 重置計數器
         p->wait_ticks = 0;
         
-        // 檢查是否需要換 queue
-        int old_queue = -1;  // 0=L3, 1=L2, 2=L1
+        int old_priority = p->priority;
+        p->priority++;
+        
+        // 確保 priority 不超過 149
+        if(p->priority > 149) {
+          p->priority = 149;
+        }
+        
+        // 判斷是否需要移動到不同的 queue
+        int old_queue = -1;
         int new_queue = -1;
         
-        // old queue
-        if(old_priority >= 0 && old_priority <= 49) {
-          old_queue = 0;
-        } else if(old_priority >= 50 && old_priority <= 99) {
-          old_queue = 1;
-        } else if(old_priority >= 100 && old_priority <= 149) {
-          old_queue = 2;
-        }
+        if(old_priority >= 0 && old_priority <= 49) old_queue = 3;
+        else if(old_priority >= 50 && old_priority <= 99) old_queue = 2;
+        else if(old_priority >= 100 && old_priority <= 149) old_queue = 1;
         
-        // new queue
-        if(p->priority >= 0 && p->priority <= 49) {
-          new_queue = 0;
-        } else if(p->priority >= 50 && p->priority <= 99) {
-          new_queue = 1;
-        } else if(p->priority >= 100 && p->priority <= 149) {
-          new_queue = 2;
-        }
+        if(p->priority >= 0 && p->priority <= 49) new_queue = 3;
+        else if(p->priority >= 50 && p->priority <= 99) new_queue = 2;
+        else if(p->priority >= 100 && p->priority <= 149) new_queue = 1;
         
-        // 跨 queue
-        if(old_queue != new_queue && old_queue != -1 && new_queue != -1) {
-          release(&p->lock);
-          struct proclistnode *pn;
+        // 如果換了 queue,需要從舊 queue 移除並加入新 queue
+        if(old_queue != new_queue) {
+          struct proclistnode *pn = 0;
           
-          // remove from old queue
-          if(old_queue == 0) {
-            // L3
-            if((pn = findproclist(&l3_queue, p)) != 0) {
+          // 從舊 queue 中找到並移除
+          if(old_queue == 3) {
+            pn = findproclist(&l3_queue, p);
+            if(pn != 0) {
               removeproclist(&l3_queue, pn);
-              freeproclistnode(pn);
-            }
-          } else if(old_queue == 1) {
-            // L2
-            if((pn = findsortedproclist(&l2_queue, p)) != 0) {
-              removesortedproclist(&l2_queue, pn);
-              freeproclistnode(pn);
             }
           } else if(old_queue == 2) {
-            // L1
-            if((pn = findsortedproclist(&l1_queue, p)) != 0) {
+            pn = findsortedproclist(&l2_queue, p);
+            if(pn != 0) {
+              removesortedproclist(&l2_queue, pn);
+            }
+          } else if(old_queue == 1) {
+            pn = findsortedproclist(&l1_queue, p);
+            if(pn != 0) {
               removesortedproclist(&l1_queue, pn);
-              freeproclistnode(pn);
             }
           }
           
-          // add to new queue
-          if((pn = allocproclistnode(p)) == 0) {
-            panic("aging: allocproclistnode");
+          // 如果成功找到並移除,重新利用這個 node
+          if(pn != 0) {
+            // 重新設定 node 的內容
+            pn->p = p;
+            pn->next = 0;
+            pn->prev = 0;
+            
+            // 加入新 queue
+            if(new_queue == 3) {
+              pushbackproclist(&l3_queue, pn);
+            } else if(new_queue == 2) {
+              pushsortedproclist(&l2_queue, pn);
+            } else if(new_queue == 1) {
+              pushsortedproclist(&l1_queue, pn);
+            }
+
+            // 檢查是否需要 preempt 當前執行的 process
+            if(cur != 0 && cur->state == RUNNING) {
+              // 如果升級到更高的 queue,檢查是否需要搶佔
+              if(new_queue < old_queue) {  // queue 編號越小優先級越高
+                // L3 → L2: 搶佔 L3
+                if(new_queue == 2 && cur->priority < 50) {
+                  cur->should_preempt = 1;
+                }
+                // L3 → L1 或 L2 → L1: 搶佔 L2 或 L3
+                else if(new_queue == 1 && cur->priority < 100) {
+                  cur->should_preempt = 1;
+                }
+                // L1 內部還需檢查剩餘時間
+                else if(new_queue == 1 && cur->priority >= 100 && cur->priority <= 149) {
+                  int cur_remaining = cur->t_i - cur->T;
+                  int new_remaining = p->t_i - p->T;
+                  if(new_remaining < cur_remaining) {
+                    cur->should_preempt = 1;
+                  }
+                }
+              }
+            }
           }
-          
-          if(new_queue == 0) {
-            // L3
-            pushbackproclist(&l3_queue, pn);
-          } else if(new_queue == 1) {
-            // L2
-            pushsortedproclist(&l2_queue, pn);
-          } else if(new_queue == 2) {
-            // L1
-            pushsortedproclist(&l1_queue, pn);
-          }
-          acquire(&p->lock);
         }
       }
     }

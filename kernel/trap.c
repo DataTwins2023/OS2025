@@ -168,28 +168,30 @@ clockintr()
 {
   acquire(&tickslock);
   ticks++;
-  // implementation step4
-  struct proc *p = myproc();
-  // 檢查 myproc() != 0 是要防止:
-  // 1. Scheduler 正在等待 process (c->proc = 0)
-  // 2. Process 切換的間隙 (scheduler 剛清空 c->proc)
-  // 3. 系統初始化或所有 process 結束
 
-  // 檢查 state == RUNNING 是要防止:
-  // Process 剛進 yield(),state 已改為 RUNNABLE
-  // 但還沒完全切換到 scheduler
-  // 此時 T 不應該累積
-  if(p != 0 && p -> state == RUNNING) {
-    if(p -> priority >= 100 && p -> priority <= 149) {
-      p -> T++;
+  // implementation step3
+  // 只有 l1 process 需要增加 T
+  struct proc *p = myproc();
+  if(p != 0 && p->state == RUNNING) {
+    if(p->priority >= 100 && p->priority <= 149) {
+      p->T++;  // 累積執行時間
+    }
+
+    // implementation step 3
+    // 如果需要被 preempt 那在這邊放棄
+    if(p -> should_preempt) {
+      p->should_preempt = 0;  // 清除 flag
+      release(&tickslock);
+      yield();
+      // 沒有 return!繼續執行下面，導致重複釋放 tickslock
+      return;
     }
   }
-
-  // implementation step 6
-  aging();
   
   // 實作在 kernel/proc.c
   wakeup(&ticks);
+  // implementation step 4
+  aging();
   release(&tickslock);
 }
 

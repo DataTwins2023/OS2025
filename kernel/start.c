@@ -97,6 +97,7 @@ timerinit()
   w_mscratch((uint64)scratch);
 
   // set the machine-mode trap handler.
+  // 這個設定一直有效
   // 透過 m_tvec 設定中斷處理函數 timervec，中斷發生時會跳到這裡執行。因為 xv6 中，M-mode 只處理時鐘中斷，所以可以這樣設定
   w_mtvec((uint64)timervec);
 

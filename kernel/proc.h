@@ -109,14 +109,17 @@ struct proc {
 
   // scheduler related
   int startrunningticks;       // ticks when the process started running
-
-  // implementation step1
-  // for l1 queue
-  int t_i;
-  int T;
-
-  // for aging
+  
+  // implementation step 1
+  // 宣告 wait_ticks
   int wait_ticks;
+
+  // implementation step 3
+  int t_i; // 預測 burst time
+  int T; // 累積執行時間
+
+  // implementation step 3
+  int should_preempt;
 };
 
 // for mp2
