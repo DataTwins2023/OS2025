@@ -138,7 +138,7 @@ w_pmpcfg0(0xf);
 
         Ⅰ. 使用 scratch 做
         -
-        - 保存暫存器
+        - 保存暫存器到 mscratch 指向的記憶體位址
         ```c
         csrrw a0, mscratch, a0
         sd a1, 0(a0)
@@ -153,7 +153,7 @@ w_pmpcfg0(0xf);
         add a3, a3, a2
         sd a3, 0(a1)
         ```
-        - 設定 S-mode 軟體中斷，這邊就跳回 MP1 裡面會看到的 yield()
+        - 設定 S-mode 軟體中斷，之後透過 trap handler 可能呼叫 yield()
         ```c
         li a1, 2
         csrw sip, a1
@@ -251,7 +251,7 @@ kernel/trap.c devintr() 在做
 ```c
 // give up the CPU if this is a timer interrupt.
 if(which_dev == 2)
-implicityield();
+    implicityield();
 ```
 如果發現是 timer 產生的 interrupt 就會做 `implicityield()`，這是在 kernel/proc.c 中
 ```c
