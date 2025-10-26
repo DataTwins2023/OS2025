@@ -32,10 +32,7 @@ struct proclist readylist;
 struct channel channels[NCHANNEL];
 
 // implementation step1
-<<<<<<< HEAD
-=======
 // 新宣告 l3, l2, l1 queue
->>>>>>> branch-implementation
 struct proclist l3_queue;
 struct sortedproclist l2_queue;
 struct sortedproclist l1_queue;
@@ -600,14 +597,9 @@ scheduler(void)
     c->proc = p;
     procstatelog(p);
     
-<<<<<<< HEAD
-    //implementation step 2
-    swtch(&c -> context, &p -> context);
-=======
     // implementation step 1
     // 補足 scheduler 中缺少的 swtch
     swtch(&c->context, &p->context);
->>>>>>> branch-implementation
 
     // Process is done running for now.
     // It should have changed its p->state before coming back.
@@ -671,22 +663,10 @@ void
 implicityield(void)
 {
   struct proc *p = myproc();
-<<<<<<< HEAD
-  // if(ticks - p->startrunningticks >= 1) {
-    // yield round robin scheduling
-    // actually ticks - p->startrunningticks should be 1
-    // yield();
-  // }
-  // implementation step 2
-  // 先確認 process 是不是在 l3
-  if(p -> priority >= 0 && p -> priority <= 49) {
-    // l3 是要求 10 個 ticks
-=======
   // implementation step 1
   // 只有 L3 (priority 0-49) 需要 RR
   if(p->priority >= 0 && p->priority <= 49) {
     // L3 要求每 10 ticks yield
->>>>>>> branch-implementation
     if(ticks - p->startrunningticks >= 10) {
       yield();
     }
@@ -984,15 +964,12 @@ proclistinit(void)
 
   // initialize readylist.
   // initproclist(&readylist);
-<<<<<<< HEAD
-=======
 
   // 初始化三個 queue
   initproclist(&l3_queue);
   initsortedproclist(&l2_queue, l2_cmp);  // 比較函數先傳 0 後續改為 cmp function
   initsortedproclist(&l1_queue, l1_cmp);  // 比較函數先傳 0 後續改為 cmp function
 
->>>>>>> branch-implementation
   // initialize channels.
   // implementation step 1
   // 原本只初始化 readylist
