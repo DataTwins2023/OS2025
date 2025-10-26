@@ -1204,35 +1204,6 @@ sizesortedproclist(struct sortedproclist *spl)
   return size;
 }
 
-// implementation step6 revision for find proclistnode in sorted ready proclist
-// find a proclistnode in a proclist.
-struct proclistnode*
-findsortedproclist(struct sortedproclist *pl, struct proc *p)
-{
-  struct proclistnode *tmp, *pn;
-  acquire(&pl->lock);
-  pn = 0;
-  for(tmp = pl->head->next; tmp != pl->tail && pn == 0; tmp = tmp->next){
-    if(tmp->p == p){
-      pn = tmp;
-    }
-  }
-  release(&pl->lock);
-  return pn;
-}
-
-// implementation step6 revision for remove proclistnode in sorted ready proclist
-// remove a proclistnode from a proclist.
-void
-removesortedproclist(struct sortedproclist *pl, struct proclistnode *pn)
-{
-  acquire(&pl->lock);
-  pl->size--;
-  pn->prev->next = pn->next;
-  pn->next->prev = pn->prev;
-  release(&pl->lock);
-}
-
 // pop and return the first element of a sortedproclist
 // following the comparison function, or 0 if the sortedproclist is empty.
 struct proclistnode*
