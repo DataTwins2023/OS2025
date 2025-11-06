@@ -123,5 +123,6 @@ timervec:
         ld a2, 8(a0)
         ld a1, 0(a0)
         csrrw a0, mscratch, a0
-
+        
+        // 跳回的地址是 mepc 的值，會由硬體設定好
         mret

@@ -362,7 +362,9 @@ fork(void)
   // 複製打開的檔案和目錄
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
+      // filedup 在做參考計數的增加
       np->ofile[i] = filedup(p->ofile[i]);
+  // idup 也會增加參考計數 
   np->cwd = idup(p->cwd);
 
   // 複製名稱
@@ -626,6 +628,7 @@ sched(void)
   if(!holding(&p->lock))
     panic("sched p->lock");
   // 確保只有一個鎖
+  // 是為了了避免死鎖
   if(mycpu()->noff != 1)
     panic("sched locks");
   // 確認狀態不是 RUNNING
@@ -636,7 +639,7 @@ sched(void)
   if(intr_get())
     panic("sched interruptible");
 
-  // 透過 intena 保存當前形成的中斷啟用狀態
+  // 透過 intena 保存當前 process 的中斷啟用狀態
   intena = mycpu()->intena;
   // 做 switch
   // 儲存當前行程的上下文並切換到 並切換到 CPU 的 scheduler context，使 scheduler 能繼續執行以選擇下一個可執行的行程
@@ -764,7 +767,8 @@ wakeup(void *chan)
   struct channel *cn; //channel指標: 用來指著對應chan的channel (對應因某個事件被轉到的SLEEPING queue:在我們的例子中為clock interrupt)
   struct proclistnode *pn; //process節點指標: 用來指著channel中被喚醒的processes的節點
 
-  //用findchannel找到對應chan的channel 如果找不到(==0) 直接return 避免作用在非合法的channel
+  // 用findchannel找到對應chan的channel 如果找不到(==0) 直接return 避免作用在非合法的channel
+  // findchannel 會取得 cn -> lock
   if((cn = findchannel(chan)) == 0) { 
     // channel not initialized
     return;

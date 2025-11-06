@@ -220,7 +220,7 @@ csrw sip, a1
 設置 sip 中的 SSIP bit 標記一個 S-mode 軟體中斷待處理
 之後透過 mret 回到之前的模式（user space）
 CPU 檢測到 sip 有 pending interrupt
-這個 S-mode 的軟體中斷會因為 kernel/trap.c 中的 `usertrapret()`
+這個 S-mode 的軟體中斷會因為 kernel/trap.c 中的
 ```c
 w_stvec(trampoline_uservec);
 ```

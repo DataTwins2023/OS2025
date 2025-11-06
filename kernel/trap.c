@@ -159,6 +159,8 @@ kerneltrap()
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
+  // row 141, 142 讀的到的值可能被改變
+  // 所以要還原
   w_sepc(sepc);
   w_sstatus(sstatus);
 }
@@ -187,7 +189,7 @@ clockintr()
       return;
     }
   }
-  
+
   // 實作在 kernel/proc.c
   wakeup(&ticks);
   // implementation step 4
