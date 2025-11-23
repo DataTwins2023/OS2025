@@ -30,7 +30,7 @@ int pgaccess(void *base, int len, void *mask);
 // usyscall region
 int ugetpid(void);
 #endif
-int vmprint(void);
+int vmprint(void); // for mp3
 int madvise(void *base, int len, int advise);
 
 // ulib.c

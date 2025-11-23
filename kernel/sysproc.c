@@ -44,8 +44,17 @@ sys_sbrk(void)
 
   argint(0, &n);
   addr = myproc()->sz;
-  if (growproc(n) < 0)
-    return -1;
+
+  // Originally we call growproc(n) when both n > 0 and n < 0.
+  // But now we only increase virtual heap of the process when n > 0
+  // Do not allocate the physical memory by calling growproc()
+  if (n > 0) {
+    myproc()->sz += n;
+  }else if(n < 0) {
+    if (growproc(n) < 0) {
+      return -1;
+    }
+  }
   return addr;
 }
 
@@ -100,3 +109,4 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+

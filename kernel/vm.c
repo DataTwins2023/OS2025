@@ -18,6 +18,8 @@ extern char etext[]; // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+
+
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -182,12 +184,15 @@ void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for (a = va; a < va + npages * PGSIZE; a += PGSIZE)
   {
-    if ((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if ((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
-    if (PTE_FLAGS(*pte) == PTE_V)
+    if ((pte = walk(pagetable, a, 0)) == 0) // page table 不存在
+      // panic("uvmunmap: walk");
+      continue;
+    if ((*pte & PTE_V) == 0) // page table entry not mapped
+      // panic("uvmunmap: not mapped");
+      continue;
+    if (PTE_FLAGS(*pte) == PTE_V) // not a leaf (所謂not a leaf 指的是沒有 R/W/X 權限只有 V)
       panic("uvmunmap: not a leaf");
+
     if (do_free)
     {
       uint64 pa = PTE2PA(*pte);
@@ -197,16 +202,16 @@ void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   }
 }
 
-// create an empty user page table.
+// create an allocate a page for putting an empty L2 user page table.
 // returns 0 if out of memory.
 pagetable_t
 uvmcreate()
 {
   pagetable_t pagetable;
   pagetable = (pagetable_t)kalloc();
-  if (pagetable == 0)
+  if (pagetable == 0) // run out of the memory kalloc return 0
     return 0;
-  memset(pagetable, 0, PGSIZE);
+  memset(pagetable, 0, PGSIZE); // clear the allocated page
   return pagetable;
 }
 
@@ -456,16 +461,180 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-/* Print multi layer page table. */
-void vmprint(pagetable_t pagetable)
-{
-  /* mp3 TODO */
-  panic("not implemented yet\n");
-}
 
 /* Map pages to physical memory or swap space. */
 int madvise(uint64 base, uint64 len, int advice)
 {
-  /* mp3 TODO */
+  struct proc *p = myproc();
+  
+  // 1. 檢查範圍是否合法
+  // base 和 len 必須大於等於 0 (unsigned 已經保證)，且範圍不能超過 process 大小
+  if (base > p->sz || (base + len) > p->sz) {
+    return -1;
+  }
+  
+  if (len == 0) return 0;
+
+  // 2. Handle normal advice: Do nothing
+  if (advice == MADV_NORMAL) {
+    return 0;
+  }
+
+  // 3. Handle Swap Out 
+  if (advice == MADV_DONTNEED) {
+    pte_t *pte;
+    uint64 start = PGROUNDDOWN(base);
+    uint64 end = PGROUNDUP(base + len);
+
+    for (uint64 va = start; va < end; va += PGSIZE) {
+      // 取得 PTE，不需要分配新的 Page Table (最後參數為 0)
+      pte = walk(p->pagetable, va, 0);
+      
+      // 如果 PTE 不存在，或是無效 (可能已經 swapped 或根本沒分配)，則跳過
+      if (pte == 0 || !(*pte & PTE_V))
+        continue;
+
+      //Transactional disk operation 
+      begin_op();
+      
+      // 1. allocate a block on disk
+      uint blockno = balloc_page(ROOTDEV);
+      
+      // 2. write memory content to disk
+      uint64 pa = PTE2PA(*pte);
+      write_page_to_disk(ROOTDEV, (char*)pa, blockno);
+      
+      // 3. 修改 PTE
+      // 清除 Valid bit, 設定 Swapped bit
+      // 將 Block Number 存入 PTE (原本放 PA 的位置)
+      // 保留原本的權限 Flags (R/W/X/U)
+      *pte = BLOCKNO2PTE(blockno) | PTE_FLAGS(*pte) | PTE_S;
+      *pte &= ~PTE_V;
+      
+      // End the transactional disk operation
+      end_op();
+      
+      // 4. free the physical memory
+      kfree((void*)pa);
+    }
+    // Flush the TLB 
+    sfence_vma();
+    return 0;
+  }
+
+  // 4. 處理 MADV_WILLNEED (Swap In)
+  if (advice == MADV_WILLNEED) {
+     pte_t *pte;
+    uint64 start = PGROUNDDOWN(base);
+    uint64 end = PGROUNDUP(base + len);
+
+    for (uint64 va = start; va < end; va += PGSIZE) {
+      // 取得 PTE，如果 Page Table 頁面不存在則建立 (alloc=1)
+      // 因為我們"Will Need"這塊記憶體，所以必須確保路徑存在
+      pte = walk(p->pagetable, va, 1);
+      if (pte == 0) return -1; // 系統記憶體不足
+
+      // 情況 A: 頁面在磁碟中 (Swapped)
+      if (*pte & PTE_S) {
+        uint blockno = PTE2BLOCKNO(*pte);
+        
+        // 分配新的物理頁面
+        char *pa = kalloc();
+        if (pa == 0) return -1; // OOM
+        
+        begin_op();
+        // 從磁碟讀回資料
+        read_page_from_disk(ROOTDEV, pa, blockno);
+        // 釋放磁碟區塊 (因為已經讀回 RAM 了)
+        bfree_page(ROOTDEV, blockno);
+        end_op();
+        
+        // 更新 PTE: 指向新的 PA，設定 Valid，清除 Swapped
+        *pte = PA2PTE((uint64)pa) | PTE_FLAGS(*pte) | PTE_V;
+        *pte &= ~PTE_S;
+      } 
+      // 情況 B: 頁面根本還沒分配 (Lazy Allocation)
+      else if (!(*pte & PTE_V)) {
+        char *pa = kalloc();
+        if (pa == 0) return -1;
+        memset(pa, 0, PGSIZE);
+        
+        // 設定新頁面的映射，給予完整權限
+        *pte = PA2PTE((uint64)pa) | PTE_R | PTE_W | PTE_X | PTE_U | PTE_V;
+      }
+      // 情況 C: 頁面已經在記憶體中 (什麼都不做)
+    }
+    return 0;
+  }
+
+  return 0;
   panic("not implemented yet\n");
+}
+
+
+
+
+/* Print multi layer page table. */
+
+/* vmprint_rec 
+pagetable: page table to print
+level:
+indent:
+
+
+*/
+static void vmprint_rec(pagetable_t pagetable, int level, int indent, uint64 va_base);
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_rec(pagetable, 2, 2, 0); // level=2, indent=2 spaces, base_va=0
+}
+
+void
+vmprint_rec(pagetable_t pagetable, int level, int indent, uint64 va_base)
+{
+  // iterate all PTEs: 每個 pte 大小為 8 bytes，一頁 4096 bytes，有 512 個 PTEs
+  for(int i = 0; i < 512; i++){ 
+    pte_t pte = pagetable[i];
+
+    if(!(pte & PTE_V) && !(pte & PTE_S)) // invalid but swapped PTE should be printed as well  
+      continue;
+
+    uint64 pa = PTE2PA(pte);
+
+    uint64 va = va_base | ((uint64)i << (level * 9 + 12));
+
+    // 印出縮排
+    for(int s = 0; s < indent; s++)
+      printf(" ");
+
+    //printf("%d: pte=%p va=%p pa=%p V", i, pte, va, pa); //印出 pa version　
+    printf("%d: pte=%p va=%p ", i, pte, va); // 印出 pte version
+
+    if (pte & PTE_S) {
+      // 從 PTE 取出 block number
+      uint64 blockno = PTE2BLOCKNO(pte);
+      // 印出其 後半部 pte 資訊
+      printf("pa=%p blockno=%p", (uint64)blockno << 12, blockno); 
+    } else {
+      // 如果是一般的 page 則直接印出其 pa
+      printf("pa=%p", pa);
+    }
+
+    if(pte & PTE_V) printf(" V");
+    if(pte & PTE_R) printf(" R");
+    if(pte & PTE_W) printf(" W");
+    if(pte & PTE_X) printf(" X");
+    if(pte & PTE_U) printf(" U");
+    if(pte & PTE_S) printf(" S");
+
+    printf("\n");
+
+    // 若是 valid page 且不是最底層(level > 0)，則繼續遞迴 L1/L0
+    if((pte & PTE_V) && level > 0) {
+      vmprint_rec((pagetable_t)pa, level - 1, indent + 2, va);
+    }
+  }
 }

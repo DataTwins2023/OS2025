@@ -30,7 +30,7 @@ void trapinithart(void)
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
-//
+// page fault is one of the exceptions that should be handled in here.
 void usertrap(void)
 {
   int which_dev = 0;
@@ -63,6 +63,12 @@ void usertrap(void)
     intr_on();
 
     syscall();
+  }
+  else if (r_scause() == 13 || r_scause() == 15) // 13 = load page fault, 15 = store page fault (為什麼要處理store page fault?)
+  {
+    if (handle_pgfault() < 0) {
+      setkilled(p);
+    }
   }
   else if ((which_dev = devintr()) != 0)
   {

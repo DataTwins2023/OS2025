@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -110,7 +111,7 @@ static struct proc *
 allocproc(void)
 {
   struct proc *p;
-
+  // find an UNUSED process slot
   for (p = proc; p < &proc[NPROC]; p++)
   {
     acquire(&p->lock);
@@ -126,8 +127,8 @@ allocproc(void)
   return 0;
 
 found:
-  p->pid = allocpid();
-  p->state = USED;
+  p->pid = allocpid(); // give process a pid
+  p->state = USED; // change state from UNUSED to USED
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0)
@@ -137,6 +138,19 @@ found:
     return 0;
   }
 
+  // mp3
+  #ifdef LAB_PGTBL
+  // Allocate a usyscall page that can share with kernel.
+  if((p->usyscallpage = (char *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Initialize content (struct usyscallpage)
+  struct usyscall*u = (struct usyscall*)(p->usyscallpage);
+  u->pid = p->pid;
+  #endif
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if (p->pagetable == 0)
@@ -165,6 +179,13 @@ freeproc(struct proc *p)
   if (p->trapframe)
     kfree((void *)p->trapframe);
   p->trapframe = 0;
+
+  #ifdef LAB_PGTBL
+  if (p->usyscallpage)
+    kfree((void *)p->usyscallpage);
+  p->usyscallpage = 0;
+  #endif
+
   if (p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -186,7 +207,7 @@ proc_pagetable(struct proc *p)
 {
   pagetable_t pagetable;
 
-  // An empty page table.
+  // An empty (all zero) page table.
   pagetable = uvmcreate();
   if (pagetable == 0)
     return 0;
@@ -195,6 +216,7 @@ proc_pagetable(struct proc *p)
   // at the highest user virtual address.
   // only the supervisor uses it, on the way
   // to/from user space, so not PTE_U.
+
   if (mappages(pagetable, TRAMPOLINE, PGSIZE,
                (uint64)trampoline, PTE_R | PTE_X) < 0)
   {
@@ -211,6 +233,18 @@ proc_pagetable(struct proc *p)
     uvmfree(pagetable, 0);
     return 0;
   }
+  // map USYSCALL (user read-only page)
+  #ifdef LAB_PGTBL
+  if (mappages(pagetable, USYSCALL, PGSIZE,
+               (uint64)(p->usyscallpage), PTE_R | PTE_U) < 0)
+  {
+    // 如果失敗，需要解除前面已經映射的頁面
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmfree(pagetable, 0);
+    return 0;
+  }
+  #endif
 
   return pagetable;
 }
@@ -222,6 +256,9 @@ void proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  #ifdef LAB_PGTBL
+  uvmunmap(pagetable, USYSCALL, 1, 0);
+  #endif
   uvmfree(pagetable, sz);
 }
 

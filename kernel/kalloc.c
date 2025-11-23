@@ -26,8 +26,9 @@ struct {
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  initlock(&kmem.lock, "kmem"); // initialize the lock for the kmem structure
+  freerange(end, (void*)PHYSTOP); // add all memory after the kernel to the free list
+  // divide the memory space (from end to PHYSTOP) into pages and add them to the free list
 }
 
 void

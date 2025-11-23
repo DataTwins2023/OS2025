@@ -9,14 +9,14 @@ volatile static int started = 0;
 // start() jumps here in supervisor mode on all CPUs.
 void
 main()
-{
+{ // use cup 0 as the boot cpu, do a sequence of initialization
   if(cpuid() == 0){
     consoleinit();
     printfinit();
     printf("\n");
     printf("xv6 kernel is booting\n");
     printf("\n");
-    kinit();         // physical page allocator
+    kinit();         // physical page allocator: 以後可使用 kalloc() 來向系統要求記憶體頁面
     kvminit();       // create kernel page table
     kvminithart();   // turn on paging
     procinit();      // process table

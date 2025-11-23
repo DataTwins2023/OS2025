@@ -117,4 +117,5 @@ struct proc
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   /* mp3 TODO */
+  char *usyscallpage; // pointer to usyscall region
 };
