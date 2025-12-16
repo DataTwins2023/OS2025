@@ -69,14 +69,14 @@ balloc(uint dev)
   struct buf *bp;
 
   bp = 0;
-  for(b = 0; b < sb.size; b += BPB){
+  for(b = 0; b < sb.size; b += BPB){ // sb is superblock，superblock 紀錄 file system 的大小
     bp = bread(dev, BBLOCK(b, sb));
     for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
       m = 1 << (bi % 8);
       if((bp->data[bi/8] & m) == 0){  // Is block free?
         bp->data[bi/8] |= m;  // Mark block in use.
-        log_write(bp);
-        brelse(bp);
+        log_write(bp); // 將修改寫到 log 中
+        brelse(bp); 
         bzero(dev, b + bi);
         return b + bi;
       }
@@ -94,13 +94,22 @@ bfree(int dev, uint b)
   struct buf *bp;
   int bi, m;
 
+  // 讀取 bitmap 區塊
+  // 把包含區塊 b 的 bitmap 區塊讀取到 buffer 中
   bp = bread(dev, BBLOCK(b, sb));
+  // 計算區塊 b 在 bitmap 區塊中的位元位置
   bi = b % BPB;
+  // 計算對應的位元遮罩
   m = 1 << (bi % 8);
+  // 檢查區塊 b 是否已經是空閒的
   if((bp->data[bi/8] & m) == 0)
+    // 試圖釋放一個已經是空閒的區塊，這是錯誤的
     panic("freeing free block");
+  // 將對應的位元清除，表示區塊 b 現在是空閒的
   bp->data[bi/8] &= ~m;
+  // 將修改寫到 log 中
   log_write(bp);
+  // 釋放 buffer
   brelse(bp);
 }
 
@@ -385,6 +394,7 @@ bmap(struct inode *ip, uint bn)
   // TODO: Large Files
   // You should modify bmap(),
   // so that it can handle doubly indrect inode.
+  // Implementation 1
   uint addr, *a;
   struct buf *bp;
 
@@ -393,30 +403,114 @@ bmap(struct inode *ip, uint bn)
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
-      ip->addrs[bn] = addr;
+      ip->addrs[bn] = addr; // 將新分配的區塊指派給 inode
     }
     return addr;
   }
   bn -= NDIRECT;
 
-  if(bn < NINDIRECT){
+  // if(bn < NINDIRECT){
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0){
+  //  if((addr = ip->addrs[NDIRECT]) == 0){
+  //    addr = balloc(ip->dev);
+  //    if(addr == 0)
+  //      return 0;
+  //    ip->addrs[NDIRECT] = addr;
+  //  }
+  //  bp = bread(ip->dev, addr);
+  //  a = (uint*)bp->data;
+  //  if((addr = a[bn]) == 0){
+  //    addr = balloc(ip->dev);
+  //    if(addr){
+  //      a[bn] = addr;
+  //      log_write(bp);
+  //    }
+  //  }
+  //  brelse(bp);
+  //  return addr;
+  //}
+
+  // singly indirect blocks
+  if(bn < NFINDIRECT * NINDIRECT){
+    // 計算這是第幾個 SIB
+    uint sib_index = NDIRECT + (bn / NINDIRECT);
+    // 計算在 SIB 中的偏移量  
+    uint sib_offset = bn % NINDIRECT;
+
+    // 分配 SIB（如果尚未分配）
+    if((addr = ip->addrs[sib_index]) == 0){
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
-      ip->addrs[NDIRECT] = addr;
+      ip->addrs[sib_index] = addr;
     }
-    bp = bread(ip->dev, addr);
-    a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
+
+    // 讀取 SIB
+    struct buf *sib_bp = bread(ip->dev, addr);
+    uint *sib_a = (uint*)sib_bp->data;
+
+    // 分配 data block（如果尚未分配）
+    if((addr = sib_a[sib_offset]) == 0){
       addr = balloc(ip->dev);
       if(addr){
-        a[bn] = addr;
-        log_write(bp);
+        sib_a[sib_offset] = addr;
+        // 因為修改 disk 上的資料結構，所以要寫到 log 中
+        log_write(sib_bp);
       }
     }
-    brelse(bp);
+    brelse(sib_bp);
+    return addr; 
+  }
+  bn -= NFINDIRECT * NINDIRECT;
+
+  // doubly indirect blocks
+  // 1 個 DIB → 256 個 SIB → 每個 SIB 指向 256 個 data blocks
+  if(bn < NINDIRECT * NINDIRECT){
+    uint dib_index = NDIRECT + NFINDIRECT; // DIB 在 addrs[] 中的索引
+
+    // 分配 DIB（如果尚未分配）
+    if((addr = ip->addrs[dib_index]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[dib_index] = addr;
+    }
+
+    // 讀取 DIB
+    struct buf *dib_bp = bread(ip->dev, addr);
+    uint *dib_a = (uint*)dib_bp->data;
+
+    // 計算這是第幾個 SIB
+    uint sib_index_in_dib = bn / NINDIRECT;
+    // 計算在 SIB 中的偏移量
+    uint data_offset_in_sib = bn % NINDIRECT;
+
+    // 分配 SIB（如果尚未分配）
+    uint sib_addr;
+    if((sib_addr = dib_a[sib_index_in_dib]) == 0){
+      sib_addr = balloc(ip->dev);
+      if(sib_addr == 0) {
+        brelse(dib_bp);
+        return 0; 
+      }
+      dib_a[sib_index_in_dib] = sib_addr;
+      log_write(dib_bp);
+    }
+    brelse(dib_bp);
+
+    // 讀取 SIB
+    struct buf *sib_bp = bread(ip->dev, sib_addr);
+    uint *sib_a = (uint*)sib_bp->data;
+
+    // 分配 data block（如果尚未分配）
+    if((addr = sib_a[data_offset_in_sib]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        sib_a[data_offset_in_sib] = addr;
+        log_write(sib_bp);
+      }
+    }
+    brelse(sib_bp);
     return addr;
   }
 
@@ -431,7 +525,10 @@ itrunc(struct inode *ip)
   // TODO: Large Files
   // You should modify itruc(),
   // so that it can handle doubly indrect inode.
-  int i, j;
+  
+  // Implementation 1
+  // int i, j;
+  int i, j, k;
   struct buf *bp;
   uint *a;
 
@@ -442,16 +539,73 @@ itrunc(struct inode *ip)
     }
   }
 
-  if(ip->addrs[NDIRECT]){
-    bp = bread(ip->dev, ip->addrs[NDIRECT]);
-    a = (uint*)bp->data;
-    for(j = 0; j < NINDIRECT; j++){
-      if(a[j])
-        bfree(ip->dev, a[j]);
+  // if(ip->addrs[NDIRECT]){
+  //   bp = bread(ip->dev, ip->addrs[NDIRECT]);
+  //   a = (uint*)bp->data;
+  //   for(j = 0; j < NINDIRECT; j++){
+  //     if(a[j])
+  //       bfree(ip->dev, a[j]);
+  //   }
+    // brelse 是要釋放 buffer
+  //   brelse(bp);
+  //   bfree(ip->dev, ip->addrs[NDIRECT]);
+  //   ip->addrs[NDIRECT] = 0;
+  // }
+
+  // 釋放 singly indirect blocks
+  for(i = NDIRECT; i < NDIRECT + NFINDIRECT; i++){
+    if(ip -> addrs[i]){
+      // 讀取 SIB
+      bp = bread(ip->dev, ip->addrs[i]);
+      a = (uint*)bp->data;
+
+      // 釋放 SIB 指向的 data blocks
+      for(j = 0; j < NINDIRECT; j++){
+        if(a[j]){
+          // bfree 裡面就會呼叫 log_write
+          bfree(ip->dev, a[j]);
+        }
+      }
+      brelse(bp);
+
+      // 釋放 SIB 本身
+      bfree(ip -> dev, ip->addrs[i]);
+      ip -> addrs[i] = 0;
     }
-    brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT]);
-    ip->addrs[NDIRECT] = 0;
+  }
+
+  // 釋放 doubly indirect blocks
+  uint dib_index = NDIRECT + NFINDIRECT;
+  if(ip -> addrs[dib_index]){
+    // 讀取 DIB
+    struct buf *dib_bp = bread(ip->dev, ip->addrs[dib_index]);
+    uint *dib_a = (uint*)dib_bp->data;
+
+    // 遍歷 DIB 中的所有 SIB 指標
+    for(k = 0; k < NINDIRECT; k++){
+      uint sib_addr = dib_a[k];
+      if(sib_addr){
+        // 讀取 SIB
+        struct buf *sib_bp = bread(ip->dev, sib_addr);
+        uint *sib_a = (uint*)sib_bp->data;
+
+        // 釋放 SIB 指向的 data blocks
+        for(j = 0; j < NINDIRECT; j++){
+          if(sib_a[j]){
+            bfree(ip->dev, sib_a[j]);
+          }
+        }
+        brelse(sib_bp);
+
+        // 釋放 SIB 本身
+        bfree(ip->dev, sib_addr);
+      }
+    }
+    brelse(dib_bp);
+
+    // 釋放 DIB 本身
+    bfree(ip->dev, ip->addrs[dib_index]);
+    ip->addrs[dib_index] = 0;
   }
 
   ip->size = 0;
@@ -666,6 +820,7 @@ namex(char *path, int nameiparent, char *name)
   else
     ip = idup(myproc()->cwd);
 
+  // 整個路徑都解析完，會返回 0
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
     if(ip->type != T_DIR){
