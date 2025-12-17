@@ -51,6 +51,10 @@ stat_slink(char *pn, struct stat *st)
 {
   int fd = open(pn, O_RDONLY | O_NOFOLLOW);
 
+  if(fd == -2){
+    st->type = T_SYMLINK;
+    return 0;
+  }
   if(fd < 0)
     return -1;
   if(fstat(fd, st) != 0)

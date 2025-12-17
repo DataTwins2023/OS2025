@@ -248,13 +248,18 @@ create(char *path, short type, short major, short minor)
   struct inode *ip, *dp;
   char name[DIRSIZ];
 
+  // 尋找 path 的父目錄
   if((dp = nameiparent(path, name)) == 0)
     return 0;
 
+  // 鎖定父目錄
   ilock(dp);
 
+  // 檢查目標名稱是否已存在
+  // 如果存在，且類型符合要求（T_FILE or T_DEVICE），則直接回傳該 inode
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
+    // 鎖定目標 inode
     ilock(ip);
     if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
       return ip;
@@ -262,23 +267,28 @@ create(char *path, short type, short major, short minor)
     return 0;
   }
 
+  // 目標不存在，建立一個新的 inode
   if((ip = ialloc(dp->dev, type)) == 0){
     iunlockput(dp);
     return 0;
   }
 
+  // 初始化 inode 的屬性
   ilock(ip);
   ip->major = major;
   ip->minor = minor;
   ip->nlink = 1;
+  // 將 inode 更新到磁碟
   iupdate(ip);
 
+  // 如果建立的是目錄，那記得需要在內部建立 . 跟 ..
   if(type == T_DIR){  // Create . and .. entries.
     // No ip->nlink++ for ".": avoid cyclic ref count.
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
       goto fail;
   }
 
+  // 將新建立的 inode 加入到父目錄中
   if(dirlink(dp, name, ip->inum) < 0)
     goto fail;
 
@@ -288,6 +298,7 @@ create(char *path, short type, short major, short minor)
     iupdate(dp);
   }
 
+  // 解鎖並釋放父目錄 inode
   iunlockput(dp);
 
   return ip;
@@ -352,6 +363,51 @@ sys_open(void)
     iunlockput(ip);
     end_op();
     return -1;
+  }
+
+  // Implementation 2
+  if(ip -> type == T_SYMLINK){
+    if(omode & O_NOFOLLOW){
+      // 如果有這個 flag，那代表不追蹤符號連結，回傳 -2
+      iunlockput(ip);
+      end_op();
+      return -2;
+    }
+    // 追蹤符號連結，最多 5 層
+    char target[MAXPATH];
+    int depth;
+
+    for(depth = 0; depth < 5; depth++){
+      // 讀取 symbol 指向的路徑
+      if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+
+      // 釋放目前的符號連結 inode
+      iunlockput(ip);
+
+      // 開啟 target 指向的檔案
+      if((ip = namei(target)) == 0){
+        end_op();
+        return -1;
+      }
+
+      // 鎖著目標 inode
+      ilock(ip);
+
+      // 如果不是符號連結，跳出迴圈
+      if(ip -> type != T_SYMLINK){
+        break;
+      }
+    }
+
+    if(depth >= 5){
+      iunlockput(ip);
+      end_op();
+      return -3;
+    }
   }
 
   if(ip->type == T_DEVICE){
@@ -440,6 +496,7 @@ sys_chdir(void)
   return 0;
 }
 
+// Implementation 2
 uint64
 sys_symlink(void)
 {
@@ -452,8 +509,35 @@ sys_symlink(void)
 
   // if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
   //   return -1;
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  // 取得 target（要透過連結指向的檔案） 跟 path（建立連結的位置）
+  if(argstr(0, target, MAXPATH) <0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
   
-  panic("You should implement symlink system call.");
+  // create 在 kernel/sysfile.c
+  // 會建立一個新的 inode，type 設為 T_SYMLINK
+  // major 和 minor 都設為 0
+  ip = create(path, T_SYMLINK, 0, 0); // 這在 kernel/stat.h 中
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+
+  // 將 target 寫入到剛建立的符號連結 inode 中
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)) != strlen(target)){
+    // 如果寫入失敗，釋放 inode 並結束操作
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  // 完成後釋放 inode
+  iunlockput(ip);
+  end_op();
 
   return 0;
 }

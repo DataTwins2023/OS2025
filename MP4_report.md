@@ -1153,7 +1153,215 @@ panic("bmap: out of range");
     iupdate(ip);
     ```
 
+# Part 2
+#### Implementation
+這部分只需要修改 `kernel/sysfile.c` 中的兩個地方
+- sys_symlink 函式
+    - sys_symlink 的主要目的是建立一個符號連結檔案，並把目標路徑字串寫進去，需要幾個步驟：
+        - 取得 target（要透過連結指向的檔案） 跟 path（建立連結的位置）
+            ```c
+            if(argstr(0, target, MAXPATH) <0 || argstr(1, path, MAXPATH) < 0)
+                return -1;
+            ```
+        - 透過 begin_op() 開始操作
+            ```c
+            begin_op();
+            ```
+        - 透過 create 建立一個新的 inode， type 設定為 T_SYMLINK ，並且把 major & minor 都設為 0
+            ```c
+            ip = create(path, T_SYMLINK, 0, 0); // 這在 kernel/stat.h 中
+            if(ip == 0){
+                end_op();
+                return -1;
+            }
+            ```
+            
+            create 在 `kernel/sysfile.c` 中，會做以下步驟：
+            - 尋找 path 的父目錄
+            - 鎖定父目錄
+            - 檢查目標名稱是否已存在，且類型符合要求
+                - 需要建立的 type 是 file，T_FILE 或是 T_DEVICE 就直接回傳 inode
+                - 否則回傳 0
+            - 如果要的目標名稱不存在，那就建立一個新的 inode
+            - 初始化 inode 的屬性
+            - 將 inode 更新到磁碟
+            - 如果建立的是目錄，需要在內部建立跟自己（.）以及父目錄（..）的連結（透過 inode number）
+                - 這邊要注意的是自己跟自己連結，不需要增加 nlink 計數
+            - 也要將新建立的 inode 加到父目錄中
+                - 這邊的 nlink 增加，已經在初始化 inode 屬性就做了
+            - 增加父目錄的 nlink 計數
+            - 解鎖並釋放父目錄
+            - 另外有一個區塊是 fail，會做：
+                - 將 inode 的 nlink 改為 0
+                - 寫到 disk
+                - 解鎖然後釋放 inode
+                - 解鎖然後釋放父目錄
+                - 回傳失敗
+            - 以下情況會進到 fail
+                - 建立目錄的 `.` 或 `..` 失敗
+                - 無法將建立的 node 加到父目錄
+        - 將 target 透過 writei 寫入剛建立的 inode 中
+            ```c
+            if(writei(ip, 0, (uint64)target, 0, strlen(target)) != strlen(target)){
+                // 如果寫入失敗，釋放 inode 並結束操作
+                iunlockput(ip);
+                end_op();
+                return -1;
+            }
+            ```
+        - 完成後釋放 inode
+            ```c
+            iunlockput(ip);
+            end_op();
+            ```
+- sys_open 函式
+    - sys_open 的主要目開啟一個檔案，並回傳 file descriptor 給使用者程式，需要幾個步驟：
+        - 透過 argint 讀取 omode
+            ```c
+            argint(1, &omode);
+            ```
+        - 透過 argstr 取得第 0 個參數存到 path 中
+            ```c
+            if((n = argstr(0, path, MAXPATH)) < 0)
+                return -1;
+            ```
+        - 透過 begin_op() 開始操作
+        - 經過一系列檢查，主要有三個檢查
+            - 透過 `O_CREATE` flag 確認是否是要建立新檔案
+                - 是的話，透過 `CREATE` 建立，失敗的話 `end_op`，回傳 -1
+                - 不是的話，透過 `namei` 去找 inode
+                    - 失敗的話 `end_op`，回傳 -1
+                    - 成功的話鎖著找到的 inode，檢查如果是目錄，那 omode 只能是 `O_RDONLY`（如果沒有這樣，那使用者可以透過 open + write 去修改 dirtectory structure，會很危險）
+            ```c
+            if(omode & O_CREATE){
+                ip = create(path, T_FILE, 0, 0);
+                if(ip == 0){
+                    end_op();
+                    return -1;
+                }
+            } else {
+                if((ip = namei(path)) == 0){
+                    end_op();
+                    return -1;
+                }
+                ilock(ip);
+                if(ip->type == T_DIR && omode != O_RDONLY){
+                    iunlockput(ip);
+                    end_op();
+                    return -1;
+                }
+            }
+            ```
+        - 檢查設備檔案，防止開啟無效的
+            ```c
+            if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
+                iunlockput(ip);
+                end_op();
+                return -1;
+            }
+            ```
+        - 透過 filealloc 從系統的 file table 中分配一個 struct file 及透過 fdalloc(f) 從 process 的 file descriptor table 分配一個 fd 編號。如果任一失敗那就要清理資源並回傳 -1
+            ```c
+            if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+                if(f)
+                    fileclose(f);
+                iunlockput(ip);
+                end_op();
+                return -1;
+            }
+            ```
+        ##### 接下來是 part 2 新增的部分
+        - 如果 ip -> type == T_SYMLINK，就要接著做判斷
+            - 如果 omode 是 O_NOFOLLOW 代表步搖追蹤符號連結，那就要：
+                - 釋放 inode
+                - 結束操作並回傳 -2
+                    ```c
+                    if(omode & O_NOFOLLOW){
+                        // 如果有這個 flag，那代表不追蹤符號連結，回傳 -2
+                        iunlockput(ip);
+                        end_op();
+                        return -2;
+                    }
+                    ```
+            - 否則的話，進入 for loop
+                - 透過 readi 把符號連結的內容（一個路徑字串）讀到 target
+                - 釋放 inode，這是目前的符號連結 inode（前面有把 ip 鎖起來）
+                - 透過 namei 將 target 對應的 inode 找出來（將其變成新一輪的 inode）
+                - 把 inode 在鎖起來
+                - 如果 ip -> type 不是 T_SYMLINK 就跳出 for loop，或是 depth >= 5 也會跳出
+            - 檢查 depth 
+                - 如果大於等於 5 就結束操作並回傳 -3
+                    ```c
+                    for(depth = 0; depth < 5; depth++){
+                        // 讀取 symbol 指向的路徑
+                        if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+                            iunlockput(ip);
+                            end_op();
+                            return -1;
+                        }
 
+                        // 釋放目前的符號連結 inode
+                        iunlockput(ip);
+
+                        // 開啟 target 指向的檔案
+                        if((ip = namei(target)) == 0){
+                            end_op();
+                            return -1;
+                        }
+
+                        // 鎖著目標 inode
+                        ilock(ip);
+
+                        // 如果不是符號連結，跳出迴圈
+                        if(ip -> type != T_SYMLINK){
+                            break;
+                        }
+                    }
+
+                    if(depth >= 5){
+                        iunlockput(ip);
+                        end_op();
+                        return -3;
+                    }
+                    ```
+                - 檢查沒問題的話就要去設定 file descriptor 的屬性
+                    - 首先設定檔案類型並且依據不同的類型做其他初始化
+                        - 設備：紀錄設備編號
+                        - 普通檔案：設定 offset = 0
+                            ```c
+                            if(ip->type == T_DEVICE){
+                                f->type = FD_DEVICE;
+                                f->major = ip->major;
+                            } else {
+                                f->type = FD_INODE;
+                                f->off = 0;
+                            }
+                            ```
+                    - 設定指向 inode
+                        ```c
+                        f -> ip = ip; // 指向 node
+                        ```
+                    - 設定是否可讀可寫
+                        ```c
+                        f->readable = !(omode & O_WRONLY); // 不是 WRONLY 就可讀
+                        f->writable = (omode & O_WRONLY) || (omode & O_RDWR); // WRONLY 或 RDWR 可寫
+                        ```
+                    - 如果有設定 O_TRUNC，那在開啟檔案時會把檔案內容清空
+                        ```c
+                        if((omode & O_TRUNC) && ip->type == T_FILE){
+                            itrunc(ip);  // 把檔案內容全部刪除，size = 0
+                        }
+                        ```
+                        
+                        itrunc 會釋放 inode 所有的 data blocks，並且更新檔案大小為 0
+                        
+                    - 釋放 inode 結束操作並回傳 fd
+                        ```c
+                        iunlock(ip);   // 解鎖 inode
+                        end_op();      // 結束 transaction
+                        return fd;     // 回傳 file descriptor 給使用者
+                        ```
+                    
 
 
 
