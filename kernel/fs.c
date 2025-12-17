@@ -262,11 +262,14 @@ iget(uint dev, uint inum)
   // Is the inode already in the table?
   empty = 0;
   for(ip = &itable.inode[0]; ip < &itable.inode[NINODE]; ip++){
+    // 找 inode table 中有沒有我要的那顆 disk 上的特定編號 inode
     if(ip->ref > 0 && ip->dev == dev && ip->inum == inum){
       ip->ref++;
       release(&itable.lock);
+      // 找到就要 return
       return ip;
     }
+    // 尋找第一個空的 inode table entry
     if(empty == 0 && ip->ref == 0)    // Remember empty slot.
       empty = ip;
   }
@@ -811,19 +814,32 @@ skipelem(char *path, char *name)
 // Must be called inside a transaction since it calls iput().
 static struct inode*
 namex(char *path, int nameiparent, char *name)
+// path 是路徑字串， nameiparent 是 0/1 用來控制解析要在哪裡停止， name 是一個輸出參數，用來存放最後一個路徑元素的名稱
+// nameiparent = 1 停在目的地的前一站（父目錄），並把目的地的小名存入 name 參數中。
+// nameiparent = 0 則會解析完整路徑並返回目的地的 inode 指標。
 {
   // TODO: Symbolic Link to Directories
   // Modify this function to deal with symbolic links to directories.
   struct inode *ip, *next;
 
+  // 先透過 path 決定起點 
   if(*path == '/')
+    // iget 在 kenrel/fs.c 裡面
+    // 如果是新找到的 valid = 0 
     ip = iget(ROOTDEV, ROOTINO);
   else
+    // 從當前工作目錄開始尋找
+    // idup 也在 kenrel/fs.c 裡面
     ip = idup(myproc()->cwd);
 
   // 整個路徑都解析完，會返回 0
+  // skipelem 在 kenrel/fs.c 裡面
+  // 他會將路徑中的下一個元素複製到 name 中 並返回下一個元素的起始位置
+  // skipelem("a/bb/c", name) = "bb/c", setting name = "a"
   while((path = skipelem(path, name)) != 0){
+    // ip 一開始是 iget 或是 idup 得到的 inode
     ilock(ip);
+    // 確保當前解析的要是一個目錄
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
@@ -831,15 +847,54 @@ namex(char *path, int nameiparent, char *name)
     if(nameiparent && *path == '\0'){
       // Stop one level early.
       iunlock(ip);
+      // 父目錄找到了，回傳
       return ip;
     }
+    // 透過 dirlookup ip 會改變
+    // 在目前的目錄 ip 中尋找 name 對應的 inode
+    // 找到的話目標的 inode 指標會被放到 next 中
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
     }
+    // 找到目標 inode 之後，解鎖並釋放當前的目錄 inode
     iunlockput(ip);
+    // ip 變了
     ip = next;
+
+    // Implementation3
+    int depth;
+    for(depth = 0; depth < 5; depth++){
+      // 檢查是否為符號連結
+      if(ip -> type != T_SYMLINK)
+        break;
+
+      char target[MAXPATH];
+
+      ilock(ip);
+
+      if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+        iunlockput(ip);
+        return 0;
+      }
+
+      iunlockput(ip);
+
+      // 透過 namei 解析符號連結的目標路徑  
+      if((ip = namei(target)) == 0){
+        return 0;
+      }
+    }
+
+    // 檢查循環深度
+    if(depth >= 5){
+      iput(ip);
+      return 0;
+    }
   }
+  // 跑到這邊，代表 nameiparent = 1 的模式失敗
+  // 沒有在預期的地方停下來
+  // 釋放資源並回傳 0
   if(nameiparent){
     iput(ip);
     return 0;

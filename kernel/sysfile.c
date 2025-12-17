@@ -469,6 +469,7 @@ sys_mknod(void)
 
 uint64
 sys_chdir(void)
+// 目的是要更改目前行程的當前工作目錄
 {
   // TODO: Symbolic Link to Directories
   // You can modify this to cd into a symbolic link
@@ -479,19 +480,62 @@ sys_chdir(void)
   struct proc *p = myproc();
   
   begin_op();
+  // 取得路徑參數
+  // 拿到 inode 指標
   if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
     end_op();
     return -1;
   }
   ilock(ip);
+
+  // Implementation3
+  // 如果 cd 的是符號連結，那要繼續追蹤
+  if(ip -> type == T_SYMLINK){
+    char target[MAXPATH];
+    int depth;
+
+    for(depth = 0; depth < 5; depth++){
+      // 讀一下符號連結的內容
+      if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+
+      iunlockput(ip);
+
+      // 追蹤到目標
+      if((ip = namei(target)) == 0){
+        end_op();
+        return -1;
+      }
+
+      ilock(ip);
+
+      // 不是符號連結就跳出
+      if(ip -> type != T_SYMLINK){
+        break;
+      }
+    }
+
+    if(depth >= 5){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+  // 如果 inode 類型不是目錄，那無法切換
   if(ip->type != T_DIR){
     iunlockput(ip);
     end_op();
     return -1;
   }
+  
   iunlock(ip);
+  // 釋放舊的工作目錄
   iput(p->cwd);
   end_op();
+  // 更新成新的工作目錄
   p->cwd = ip;
   return 0;
 }
