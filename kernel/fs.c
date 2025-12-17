@@ -395,8 +395,9 @@ bmap(struct inode *ip, uint bn)
   // You should modify bmap(),
   // so that it can handle doubly indrect inode.
   // Implementation 1
-  uint addr, *a;
-  struct buf *bp;
+  // uint addr, *a;
+  // struct buf *bp;
+  uint addr;
 
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0){

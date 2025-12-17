@@ -573,14 +573,19 @@
             - 如果 buffer 的 valid == 0（這在 `bget` 中會去設定）
                 - 再透過 `virtio_disk_rw()` 從磁碟讀入資料
                 - 將 valid 標記為 1
+        - 補充
+            - 在 `bread` 中一開始會透過 `bget` 來鎖著整個 cache 並找到需要的 buffer cache，接著就會解鎖整個 cache 但還是鎖住單一需要的 buffer cache
         - 輸出：指向 buffer 的 pointer
     - brelse：實作在 `kernel/bio.c`，目的是要釋放 buffer 並減少 ref count
         - 輸入是
-            - b：要釋放的 buffer
+            - b：要釋放的 buffer cahe
         - 過程
             - 減少 buffer 的 `refcnt`
-            - 如果 `refcnt` == 0，將 buffer 放回 bcache 中
-            - 透過 `release` 喚醒等待這個 buffer 的 process（可能是兩個 process 要讀同一個 block）
+            - 如果 `refcnt` == 0，將 buffer 移到 LRU 列表的頭部
+            - 透過 `releasesleep` 喚醒等待這個 buffer 的 process（可能是兩個 process 要讀同一個 block）
+        - 補充
+            - `brelse` 一開始會釋放單一 buffer cache 的鎖
+            - 接著鎖住整個 cache 來做 refcnt 的調整
     - log_write：實作在 `kernel/log.c`，主要目的是標記 buffer 需要寫回 disk，並加入 transaction log
         - 輸入是
             - b：已修改的 buffer
@@ -855,3 +860,301 @@
             - ip -> ref 扣 1
             - 釋放 itable 的鎖
     - inode 中 ref 的目的是要紀錄有多少 process 或是其他結構在使用這個 inode，以確保 inode 在被使用期間不被回收，並在 ref 歸零時允許 itable slot 被重複使用，或在硬連結數（nlink）同時歸零時觸發磁碟資源的永久清理。
+
+
+#### Implementation
+我們依照 implementation 要修改的檔案依依說明，要修改的有：
+- kernel/fs.h
+- kernel/file.h
+- kernel/fs.c 中的 bmap() 以及 itrunc()
+
+首先是 `kernel/fs.h`
+
+在這個檔案中總共修改三個地方
+- NDIRECT 部分
+    ```c
+    #define NDIRECT 12
+    ```
+    變成
+    ```c
+    #define NDIRECT 7
+    #define NFINDIRECT 5
+    #define NDINDIRECT 1
+    ```
+    這是為了要達成 SPEC 中的目標，至少 66666 個 data blocks。
+
+    NDIRECT = Number of Direct blocks
+
+    NFINDIRECT = Number of First-level Indirect block pointers
+
+    NFINDIRECT = Number of Doubly-Indirect block pointers
+
+    透過這樣的組合，一個檔案的容量可以達到 66823 個 data blocks。
+- MAXFILE 部分
+    ```c
+    #define MAXFILE (NDIRECT + NINDIRECT)
+    ```
+    變成
+    ```c
+    #define MAXFILE (NDIRECT + NFINDIRECT*NINDIRECT + NDINDIRECT*NINDIRECT*NINDIRECT)
+    ```
+    修改一個檔案最多可以有多少個 block 的定義
+- dinode 中 addrs（這個 dinode 是 disk inode）
+    ```c
+    uint addrs[NDIRECT+1];   // Data block addresses
+    ```
+    變成
+    ```c
+    uint addrs[NDIRECT + NFINDIRECT + NDINDIRECT];   // Data block addresses
+    ```
+    因為已經改變了 data blocks 的結構，所以這邊也要修改，雖然總數不變，但用途不同
+
+接著是 `kernel/file.h`
+- inode 中 addrs（這個 inode 是 memory 上的 inode 副本，所以結構需要和 disk 上的一致）
+    ```c
+    uint addrs[NDIRECT+1];
+    ```
+    變成
+    ```c
+    uint addrs[NDIRECT + NFINDIRECT + NDINDIRECT];
+    ```
+
+再來是 `kernel/fs.c` 中的 bmap()
+
+`bmap` 的任務是幫 inode 的 bn(logic) 找到對應的 physical block number，我們一樣可以把這個任務分為三階段來看
+- NDIRECT：如果 bn 小於 `NDIRECT` 那代表是直接區塊，跟原本的做法沒什麼不同，直接從 ip->addrs[bn] 讀取或分配
+- NFINDIRECT：如果 bn 不小於 `NDIRECT` 那代表不是直接區塊（有可能是一級區塊或是二級區塊），為了要做這個判斷，首先要把 bn -= NDIRECT，接下來會經過幾個步驟
+    - 透過 if 判斷 bn 是否小於 NFINDIRECT * NINDIRECT，如果是則代表在一級區塊
+    ```c
+    if(bn < NFINDIRECT * NINDIRECT)
+    ```
+    - 計算是第幾個 singly indirect block，透過 `bn / NINDIRECT` 可以知道這是第幾個 SIB
+    ```c
+    uint sib_index = NDIRECT + (bn / NINDIRECT);
+    ```
+    - 計算在 single idnex block 中的偏移量
+    ```c
+    uint sib_offset = bn % NINDIRECT;
+    ```
+    - 檢查 singly indirect block 本身是否已經被分配了 physical block，若無的話透過 `balloc` 分配，`balloc` 回傳是 block number，所以之後要透過 `bread` 將這個 block number 的資料讀出來
+    ```c
+    if((addr = ip->addrs[sib_index]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[sib_index] = addr;
+    }
+    ```
+    - 確認有分配或是分配完成後，透過 `bread` 將 physical block 放到 memory buffer 中，並且透過 sib_a 指標指向整個 singly indirect block 的開頭（實際是包含 256 個 data block）
+    ```c
+    struct buf *sib_bp = bread(ip->dev, addr);
+    uint *sib_a = (uint*)sib_bp->data;
+    ```
+    - 將 singly indirect block 讀出來後，再透過 `sib_offset` 檢查是否已經有分配 physical block 了
+        - 沒有的話  
+            - 透過 `balloc` 分配，並且修改 `sib_bp` 的 data 內容
+            - 注意因為這邊修改了透過 `bread` 讀進來的 on-disk data structure，需要呼叫 `log_write` 來寫回磁碟
+        - 有的話就不需要做分配
+        ```c
+        if((addr = sib_a[sib_offset]) == 0){
+            addr = balloc(ip->dev);
+            if(addr){
+                sib_a[sib_offset] = addr;
+                // 因為修改 disk 上的資料結構，所以要寫到 log 中
+                log_write(sib_bp);
+            }
+        }
+        ```
+    - 透過 `brelse` 釋放 `sib_bp` 這個 buffer
+    ```c
+    brelse(sib_bp);
+    ```
+    - return logic block number 對應的 physical block number
+    ```c
+    return addr;
+    ```
+- NDINDIRECT：如果 bn 不是直接區塊也不是一級區塊，那 bn 會經過兩次調整。首先是 bn -= NDIRECT，再來是 bn -= NFINDIRECT * NINDIRECT（排除一級區塊），接下來會經過幾個步驟
+    - 判斷調整後的 bn 是否在二級區塊的範圍內 (< 65536)
+    ```c
+    if(bn < NINDIRECT * NINDIRECT)
+    ```
+    - 透過 dib_index 表示 DIB（doubly indirect block）在 ip -> addrs 中的 index
+    ```c
+    uint dib_index = NDIRECT + NFINDIRECT;
+    ```
+    - 如果 ip->addrs[dib_index] 還沒分配 physical block 就要透過 `balloc` 分配
+    ```c
+    if((addr = ip->addrs[dib_index]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[dib_index] = addr;
+    }
+    ```
+    - 確認有分配或是分配完成後，透過 `bread` 將 physical block 放到 memory buffer 中，並且透過 dib_a 指標指向整個 doublely indirect block 的開頭（實際是包含 256 個 SIB 指標的陣列）
+    ```c
+    struct buf *dib_bp = bread(ip->dev, addr);
+    uint *dib_a = (uint*)dib_bp->data;
+    ```
+    - 計算是第幾個 singly indirect block，透過 `bn / NINDIRECT` 可以知道這是第幾個 SIB
+    ```c
+    uint sib_index_in_dib = bn / NINDIRECT;
+    ```
+    - 計算在 single idnex block 中的偏移量
+    ```c
+    uint data_offset_in_sib = bn % NINDIRECT;
+    ```
+    - 如果 singly indirect block（sib_index_in_dib） 尚未被分配到 physical block，則透過 `balloc` 分配
+    ```c
+    uint sib_addr;
+    if((sib_addr = dib_a[sib_index_in_dib]) == 0){
+      sib_addr = balloc(ip->dev);
+      if(sib_addr == 0) {
+        brelse(dib_bp);
+        return 0; 
+      }
+      dib_a[sib_index_in_dib] = sib_addr;
+      log_write(dib_bp);
+    }
+    ```
+        - 注意因為這邊修改了透過 `bread` 讀進來的 on-disk data structure，需要呼叫 `log_write` 來寫回磁碟
+    - 結束後釋放 buffer cache
+    ```c
+    brelse(dib_bp);
+    ```
+    - 讀取 `sib_addr`（可能是原本就分配好或是剛剛透過 `addr` 分配的），並且透過 sib_a 指標指向整個 singly indirect block 的開頭（實際是包含 256 個 data block 號碼的陣列）
+    ```c
+    struct buf *sib_bp = bread(ip->dev, sib_addr);
+    uint *sib_a = (uint*)sib_bp->data;
+    ```
+     - 將 singly indirect block 讀出來後，再透過 `data_offset_in_sib` 檢查是否已經有分配 physical block 了
+        - 沒有的話  
+            - 透過 `balloc` 分配，並且修改 `sib_bp` 的 data 內容
+            - 注意因為這邊修改了透過 `bread` 讀進來的 on-disk data structure，需要呼叫 `log_write` 來寫回磁碟
+        - 有的話就不需要做分配
+        ```c
+        if((addr = sib_a[data_offset_in_sib]) == 0){
+            addr = balloc(ip->dev);
+            if(addr){
+                sib_a[data_offset_in_sib] = addr;
+                // 因為修改 disk 上的資料結構，所以要寫到 log 中
+                log_write(sib_bp);
+            }
+        }
+        ```
+    - 透過 `brelse` 釋放 `sib_bp` 這個 buffer
+    ```c
+    brelse(sib_bp);
+    ```
+    - return logic block number 對應的 physical block number
+    ```c
+    return addr;
+    ```
+- 若是三個區塊都不符合，則出現 panic
+```c
+panic("bmap: out of range");
+```
+
+
+
+最後是 `kernel/fs.c` 中的 itrunc()
+
+`itrunc` 的任務是釋放 inode 的所有 data blocks 並清空檔案內容，我們一樣可以把這個任務分為三階段來看
+- NDIRECT：釋放所有直接區塊，包括呼叫 `bfree` 釋放 block 以及將 ip -> addrs[i] 設為 0
+    ```c
+    for(i = 0; i < NDIRECT; i++){
+        if(ip->addrs[i]){
+        bfree(ip->dev, ip->addrs[i]);
+        ip->addrs[i] = 0;
+        }
+    }
+    ```
+- NFINDIRECT：這是 singly indirect block，要做幾個步驟
+    - 把 singly indirect block 透過 `bread` 讀入 buffer 中（bp），必且透過 a 指向 bp -> data（就是 256 個 data block 的指標）
+        ```c
+        for(i = NDIRECT; i < NDIRECT + NFINDIRECT; i++){
+        if(ip -> addrs[i]){
+        // 讀取 SIB
+        bp = bread(ip->dev, ip->addrs[i]);
+        a = (uint*)bp->data;
+        ...
+        ```
+    - 對 bp -> data 中的 256 個 data block 做遍歷，查看是否有在使用，若是有則呼叫 `bfree` 做釋放
+        ```c
+        for(j = 0; j < NINDIRECT; j++){
+            if(a[j]){
+            // bfree 裡面就會呼叫 log_write
+            bfree(ip->dev, a[j]);
+            }
+        }
+        ```
+    - 呼叫 `brelse` 釋放 buffer
+        ```c
+        brelse(bp)
+        ```
+    - 釋放 singly indirect block 本身
+        ```c
+        // 釋放 SIB 本身
+        bfree(ip -> dev, ip->addrs[i]);
+        ip -> addrs[i] = 0;
+        ```
+    **以上動作因為可能有多個 singly indirect block 所以要透過 for loop 重複做**
+- NDINDIRECT：這是 doubly indirect block，要做幾個步驟
+    - 先判斷有沒有在使用，有的話就接著做
+        ```c
+        uint dib_index = NDIRECT + NFINDIRECT;
+        if(ip -> addrs[dib_index])
+        ```
+        - 把 doubly indirect block 透過 `bread` 讀入 buffer 中（dib_bp），並且透過 dib_a 指向 dib_bp -> data（就是 256 個 singly indirect block 的指標）
+            ```c
+            struct buf *dib_bp = bread(ip->dev, ip->addrs[dib_index]);
+            uint *dib_a = (uint*)dib_bp->data;
+            ```
+        - 針對每一個指向 singly indirect block 的指標
+
+            如果有在使用，就再透過 `bread` 將 singly indirect block 讀進 memory buffer（sib_bp）。再透過 sib_a 指向 sib_bp -> data（就是 256 個 data block 的指標）
+            ```c
+            for(k = 0; k < NINDIRECT; k++){
+            uint sib_addr = dib_a[k];
+            if(sib_addr){
+                // 讀取 SIB
+                struct buf *sib_bp = bread(ip->dev, sib_addr);
+                uint *sib_a = (uint*)sib_bp->data;
+            ...
+            ```
+            - 接著透過 for 迴圈確認 data block 是否有使用，若是有則使用 `bfree` 將其釋放（這不需要讀到 memory buffer，因為只要知道 physical block number 即可）
+                ```c
+                    for(j = 0; j < NINDIRECT; j++){
+                        if(sib_a[j]){
+                        bfree(ip->dev, sib_a[j]);
+                        }
+                    }
+                ```
+            - 透過 `brelse` 釋放 buffer（這是 singly indirect block）
+                ```c
+                brelse(sib_bp);
+                ```
+            - 透過 `bfree` 釋放 singly indirect block 本身
+                ```c
+                bfree(ip->dev, sib_addr);
+                ```
+        - 透過 `brelse` 釋放 buffer（這是 doubly indirect block）
+            ```c
+            brelse(dib_bp);
+            ```
+        - 透過 `bfree` 釋放 doubly indirect block 本身
+            ```c
+            bfree(ip->dev, ip->addrs[dib_index]);
+            ip->addrs[dib_index] = 0;
+            ```
+- 更新 inode 大小，並將修改後的 indoe 寫回 disk
+    ```c
+    ip ->size = 0;
+    iupdate(ip);
+    ```
+
+
+
+
+
+    
