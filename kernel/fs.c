@@ -814,87 +814,93 @@ skipelem(char *path, char *name)
 // Must be called inside a transaction since it calls iput().
 static struct inode*
 namex(char *path, int nameiparent, char *name)
-// path 是路徑字串， nameiparent 是 0/1 用來控制解析要在哪裡停止， name 是一個輸出參數，用來存放最後一個路徑元素的名稱
-// nameiparent = 1 停在目的地的前一站（父目錄），並把目的地的小名存入 name 參數中。
-// nameiparent = 0 則會解析完整路徑並返回目的地的 inode 指標。
 {
   // TODO: Symbolic Link to Directories
   // Modify this function to deal with symbolic links to directories.
   struct inode *ip, *next;
+  
+  // Implementation 3
+  int depth = 0;
+  // char *orig_path = path; // 保留原始路徑指標
 
-  // 先透過 path 決定起點 
+restart: // 重新開始解析的標籤
   if(*path == '/')
-    // iget 在 kenrel/fs.c 裡面
-    // 如果是新找到的 valid = 0 
+    // 從根目錄開始解析路徑
+    // iget 的目的是在 inode table 中找到對應的 inode並將他的 ref +1
+    // root directory 不確定是否已經在 inode table 中
     ip = iget(ROOTDEV, ROOTINO);
   else
-    // 從當前工作目錄開始尋找
-    // idup 也在 kenrel/fs.c 裡面
+    // 從當前工作目錄開始解析路徑
+    // 會用 idup 是因為目前已經持有自己的 cwd
+    // idup 的作用是增加一個 「已經存在且已經被打開」的 inode 的 ref 計數
     ip = idup(myproc()->cwd);
 
-  // 整個路徑都解析完，會返回 0
-  // skipelem 在 kenrel/fs.c 裡面
-  // 他會將路徑中的下一個元素複製到 name 中 並返回下一個元素的起始位置
-  // skipelem("a/bb/c", name) = "bb/c", setting name = "a"
   while((path = skipelem(path, name)) != 0){
-    // ip 一開始是 iget 或是 idup 得到的 inode
+    // skipelem 每次會把一個路徑字串的第一個 element 取出來放到 name 中
+    // 回傳新的 path 字串（去掉剛剛取出的 element）
     ilock(ip);
-    // 確保當前解析的要是一個目錄
+    // 如果不是目錄就錯誤
+    // 在整個解析的過程，只有最後一個元素可以不是目錄
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
     }
+    // 因為 nameiparent 的話，只需要找到 parent 就好
+    // 但 path == '\0' 代表已經沒有路徑了
+    // 例如 a/b/c ，當解析到 c 的時候，path 就會是 '\0'
+
     if(nameiparent && *path == '\0'){
-      // Stop one level early.
       iunlock(ip);
-      // 父目錄找到了，回傳
       return ip;
     }
-    // 透過 dirlookup ip 會改變
-    // 在目前的目錄 ip 中尋找 name 對應的 inode
-    // 找到的話目標的 inode 指標會被放到 next 中
+    // 在當前的目錄中尋找剛取出來的 element
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
     }
-    // 找到目標 inode 之後，解鎖並釋放當前的目錄 inode
     iunlockput(ip);
-    // ip 變了
+    // 修改 ip
     ip = next;
 
-    // Implementation3
-    int depth;
-    for(depth = 0; depth < 5; depth++){
-      // 檢查是否為符號連結
-      if(ip -> type != T_SYMLINK)
-        break;
-
-      char target[MAXPATH];
-
+    // 代表現在在解析的路徑不是最後一個 element
+    if(*path != '\0'){ 
       ilock(ip);
+      if(ip->type == T_SYMLINK){
+        // 防止無限迴圈
+        if(++depth >= 5){
+          iunlockput(ip);
+          return 0;
+        }
 
-      if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+        char target[MAXPATH];
+        // 讀取連結內容 (例如 "e/f")
+        if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+          iunlockput(ip);
+          return 0;
+        }
         iunlockput(ip);
-        return 0;
+
+        // 拼接路徑
+        static char new_path[MAXPATH];
+        // 先放 target
+        safestrcpy(new_path, target, MAXPATH);
+        // 如果原本還有剩下的 path，拼接上去 (例如 "/b/c")
+        if(*path != '\0'){
+          int len = strlen(new_path);
+          if(len < MAXPATH - 1){
+            new_path[len] = '/';
+            safestrcpy(new_path + len + 1, path, MAXPATH - len - 1);
+          }
+        }
+
+        // 重置路徑指標並跳回開頭重新解析
+        path = new_path;
+        goto restart; 
       }
-
-      iunlockput(ip);
-
-      // 透過 namei 解析符號連結的目標路徑  
-      if((ip = namei(target)) == 0){
-        return 0;
-      }
-    }
-
-    // 檢查循環深度
-    if(depth >= 5){
-      iput(ip);
-      return 0;
+      iunlock(ip);
     }
   }
-  // 跑到這邊，代表 nameiparent = 1 的模式失敗
-  // 沒有在預期的地方停下來
-  // 釋放資源並回傳 0
+
   if(nameiparent){
     iput(ip);
     return 0;
