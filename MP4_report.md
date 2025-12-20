@@ -138,17 +138,17 @@
                 ```c
                 int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
                 ```
-                確保每次寫入造成的修改不超過一個日誌區塊的大小，否則日誌系統會崩潰
+                確保每次寫入造成的修改不超過一定值日誌區塊的大小，否則日誌系統會崩潰
                 - `MAXOPBLOCKS` 代表日誌系統的最大區塊容量（10，定義在 `kernel/param.h`）
                 - `-1` 預留給 `Log Header` 區塊
-                - `-1` 預留給 `inode` 區塊
-                - `-2` 預留給 bitmap 及 indirect block 的變動。當檔案跨越邊界或需要分配新塊時，這些 metadata 會被修改
+                - `-1` 預留給 `inode` 區塊（雖然一次的寫入只會需要修改一個 inode，但日誌系統以 block 為單位記錄修改，所以需要記錄整個 inode block）
+                - `-2` 預留給 bitmap 及 directory block 的變動。當檔案跨越邊界或需要分配新塊時，這些 metadata 會被修改
                 - `/2` 這是為了處理 「非對齊寫入 (Non-aligned write)」
                 - `* BSIZE` 轉換單位為 Byte
             - 開始寫入，透過 while loop 確認是否還有數據要寫入
                 - 如果剩餘量 (n1) 大於單次日誌事務能安全處理的最大長度，則將本次寫入的長度限制在 max
                 - begin_op 是日誌系統宣告原子操作開始
-                - ilock(f -> ip) 取得 `inode` 的鎖，讓目前的 process 可以修改檔案的數據跟 metadata
+                - ilock(f -> ip) 取得 `inode` 的鎖，讓目前的 process 可以修改檔案的數據跟 metadata（因為 file 在開啟時，已經透過 `sys_open` 把 inode 載入到 memory 了）
                 - `writei`（實作在 `kernel/fs.c`） 下一個階段會說明
                 - iunlock(f -> ip) 釋放 `inode` 的鎖
                 - end_op 通知日誌系統這次的操作已經完成，必且會檢查如果沒有其他事物在進行就會把所有暫存的變更寫到 disk
@@ -189,7 +189,7 @@
                     addr = balloc(ip->dev);
                     if(addr == 0)
                         return 0;
-                    ip->addrs[bn] = addr; // ip->addrs 代表該檔案第 n 個 block 在磁碟上的哪個 block，這邊修改的是 indoe 而 inode 的同步不由 bmap 負責，因為 inode 是在記憶體中，所以同步的事情可以等到 write 要結束再透過 iupdate 做
+                    ip->addrs[bn] = addr; // ip->addrs 代表該檔案第 n 個 block 在磁碟上的哪個 block，這邊修改的是 indoe 而 inode 的同步不由 bmap 負責，因為修改的 inode 是在記憶體中，所以同步的事情可以等到 write 要結束再透過 iupdate 做
                 }
                 return addr;
             }
@@ -203,13 +203,14 @@
                         return 0;
                     ip->addrs[NDIRECT] = addr; // 針對 inode 本身的修改
                 }
-                bp = bread(ip->dev, addr); // 讀取剛剛分配給 NINDIRECT 索引的 disk
+                bp = bread(ip->dev, addr); // 讀取剛剛分配給 NINDIRECT 索引的 disk 區塊
                 a = (uint*)bp->data;
                 if((addr = a[bn]) == 0){
                     addr = balloc(ip->dev);
                     if(addr){
-                        a[bn] = addr;
-                        log_write(bp); // 將對 INDIRECT BLOCK 的修改寫到 log 中
+                        a[bn] = addr; // 修改 block 內容（來自 disk）
+                        log_write(bp); // 將對 buffer cache 的修改寫到 log 中
+                        // 需要立即寫回是因為 buffer cache 可能被回收
                     }
                 }
                 brelse(bp);
@@ -323,7 +324,7 @@
     
 ### Part B: Deleting a Large File
 1. kernel/sysfile.c/sys_unlink()
-- 如同在 Part A，在 user 呼叫 `unlink()` 時，會呼叫到 `user/usys.S` 中的 unlink 片段
+    - 如同在 Part A，在 user 呼叫 `unlink()` 時，會呼叫到 `user/usys.S` 中的 unlink 片段
         ```c
         .global unlink
         unlink:
@@ -469,7 +470,7 @@
                     
                     **ip -> ref 和 ip -> nlink 有什麼不同？**
 
-                    **ip -> ref 代表內存中有多少個核心數據結構正在使用這個 inode 副本。 ip -> ref 等於 1 代表只有目前正在執行 iput 的 process 有對這個 inode 做引用**
+                    **ip -> ref 代表內存中有多少個 kernel data structure 正在使用這個 inode 副本。 ip -> ref 等於 1 代表只有目前正在執行 iput 的 process 有對這個 inode 做引用**
 
                     **ip -> nlink 代表 disk 上有多少個檔案指向這個 inode**
 
@@ -487,15 +488,20 @@
                 - ip -> ref --;
                 - 釋放 `itable` 的鎖
         - 所以 iunlockput 就是在 unlock inode 並減少 inode 的 reference 計數，接著允許其他 process 使用或是做資源的清理
-        **sys_unlink 不會每次都清空（釋放 blocks 和標記 inode 為未使用）檔案的 Inode。只有在兩個條件滿足下（1. 硬連結計數為 0, 2. reference 只剩下一個）才會被 iput 呼叫 itrunc 徹底清理**
+
+            **sys_unlink 不會每次都清空（釋放 blocks 和標記 inode 為未使用）檔案的 Inode。只有在兩個條件滿足下**
+            - 硬連結計數為 0
+            - reference 只剩下一個
+            
+            才會被 iput 呼叫 itrunc 徹底清理
     - kernel/fs.c/itrunc()
         - 目的就是清理並釋放某個檔案原本佔有的 block
         - 首先釋放 direct blocks
             ```c
             for(i = 0; i < NDIRECT; i++){
                 if(ip->addrs[i]){
-                bfree(ip->dev, ip->addrs[i]);
-                ip->addrs[i] = 0;
+                    bfree(ip->dev, ip->addrs[i]);
+                    ip->addrs[i] = 0;
                 }
             }
             ```
@@ -514,7 +520,7 @@
                 ip->addrs[NDIRECT] = 0;
             }
             ```
-            同樣的，要先把間接區塊讀到記憶體中的緩衝區，才能去讀裡面的東西，接著遍歷所有 NINDIRECT ，只要非零就呼叫 `bfree` 來釋放。
+            同樣的，要先把間接區塊讀到記憶體中的緩衝區，才能去讀裡面的東西，接著遍歷所有 NINDIRECT ，只要非零就呼叫 `bfree` 來釋放（內部會有 `log_wrtie`）。
 
             接著再釋放間接區塊本身佔用的 disk 區塊
 
@@ -554,31 +560,67 @@
             - ip：inode 指標
             - bn：檔案內的 logical block num
         - 過程
-            - 如果是 `direct block`（bn < 12）：直接從 ip -> addrs[bn] 讀取
+            - 如果是 `direct block`（bn < 12）
+                - 直接從 ip -> addrs[bn] 讀取
+                - 如果 ip -> addrs[bn] == 0 代表尚未分配
+                    - 呼叫 `balloc(ip->dev)` 分配新的 block
+                    - 將 `balloc`return 的 block number 放到 `ip->addrs[bn]`
+                    - 這邊修改的是記憶體中的 inode 副本，之後會透過 `iupdate()` 同步到 disk
             - 如果是 `indirect block`（bn >= 12）：先讀取間接區塊，再查詢對應的指標
-            - 如果 block 尚未分配的話要呼叫 `balloc()` 並更新 ip -> addrs[]
+                - step 1：檢查 indirect block 本身
+                    - 檢查 `ip->addrs[NDIRECT]`
+                    - 如果是 0 就要呼叫 `balloc()` 分配 indirect block，並存入 `ip->addrs[NDIRECT]`
+                - step 2：處理 indirect block 的內容
+                    - 用 `bread()` 把 indirect block 讀到 buffer cache
+                    - 檢查 `a[bn]` （第 bn 個 data block 的編號）
+                        - 如果是 0：呼叫 `balloc()` 分配 data block 並存入 `a[bn]`
+                    - 修改 indirect block 的內容後，必須呼叫 `log_write(bp)` 立即寫回
+                    - 用 `brelse(bp)`  釋放 buffer
+            - 超出範圍的話就會出現 `panic`
     - itrunc：實作在 `kernel/fs.c`，主要目的是釋放 inode 佔用的所有區塊並且將檔案大小設為 0
         - 輸入是
             - ip：inode 指標（要清空的）
         - 過程
             - 釋放所有 direct block
+                - 遍歷 `ip->addrs[0]` 到 `ip->addrs[11]`
+                - 如果 `ip->addrs[i] != 0`：
+                    - 呼叫 `bfree(ip->dev, ip->addrs[i])` 釋放該 block
+                    - 將 `ip->addrs[i]` 設為 0  
             - 釋放間接區塊（分為所有間接指向的資料區塊以及間接區塊本身）
-            - 將 ip -> size 設為 0
+                - 如果 `ip->addrs[NDIRECT] != 0`（有 indirect block）：
+                    - 用 `bread()` 讀取 indirect block 到 buffer
+                    - 把 `bp->data` 解釋為 `uint` 陣列
+                    - **先釋放所有 data blocks**：
+                        - 遍歷陣列中的每個 `a[j]`
+                        - 如果 `a[j] != 0`：呼叫 `bfree(ip->dev, a[j])`
+                    - 用 `brelse(bp)` 釋放 buffer
+                    - **再釋放 indirect block 本身**：
+                        - 呼叫 `bfree(ip->dev, ip->addrs[NDIRECT])`
+                        - 將 `ip->addrs[NDIRECT]` 設為 0
+            - **更新 inode metadata**
+                - 將 ip -> size 設為 0
+                - 呼叫 `iupdate(ip)` 將修改同步到磁碟
     - bread：實作在 `kernel/bio.c`，主要目的是讀取一個 block 到 memory 中的 buffer cache。
         - 輸入是
             - dev：裝置編號
             - blockno：要讀取的 block 號碼
         - 過程
-            - 透過 `bget()` 來取得或分配 buffer
-            - 如果 buffer 的 valid == 0（這在 `bget` 中會去設定）
-                - 再透過 `virtio_disk_rw()` 從磁碟讀入資料
-                - 將 valid 標記為 1
+            - 透過 `bget()` 來取得或分配 buffer，`bget()` 會：
+                - 先在 buffer cache 中尋找是否已存在（cache hit）
+                - 如果不存在，分配一個 LRU 的 buffer
+                - 鎖定並返回 buffer
+            - 檢查 buffer 的 valid（這在 `bget` 中會去設定）
+                - `valid == 1`：buffer 中資料有效，直接返回
+                - `valid == 0`：buffer 中資料無效，要從 disk 讀取
+                    - 透過 `virtio_disk_rw(b, 0)` 從磁碟讀入資料
+                    - 將 valid 標記為 1
+            - 返回 buffer
         - 補充
             - 在 `bread` 中一開始會透過 `bget` 來鎖著整個 cache 並找到需要的 buffer cache，接著就會解鎖整個 cache 但還是鎖住單一需要的 buffer cache
         - 輸出：指向 buffer 的 pointer
     - brelse：實作在 `kernel/bio.c`，目的是要釋放 buffer 並減少 ref count
         - 輸入是
-            - b：要釋放的 buffer cahe
+            - b：要釋放的 buffer cahe 指標
         - 過程
             - 減少 buffer 的 `refcnt`
             - 如果 `refcnt` == 0，將 buffer 移到 LRU 列表的頭部
@@ -589,15 +631,18 @@
     - log_write：實作在 `kernel/log.c`，主要目的是標記 buffer 需要寫回 disk，並加入 transaction log
         - 輸入是
             - b：已修改的 buffer
+        - 前提
+            - 必須在 `begin_op()` 和 `end_op()` 之間呼叫
         - 過程
+            - 檢查是不是在 transaction 中（透過 `log.outstanding`）
             - 檢查 log 空間是否足夠（`log.lh.n` 是目前的 transaction 已經紀錄多少個 blocks）
-            - 確定 `log_write` 是在 `begin_op` 及 `end_op` 間被呼叫的
             - 透過掃描已經紀錄的 blocks 檢查是否已經紀錄過這個 block，這樣做的原因是因為同一個 block 可能被修改多次，但 log 不用重複紀錄，只要覆蓋就好 
             - 接下來會有兩種情況
                 - 已經紀錄過的 block，其實沒變
                 - 第一次紀錄的 block
+                    - 將 `b->blockno` 加入 `log.lh.block[log.lh.n]`
+                    - `log.lh.n++`（記錄的 block 數量加一）
                     - 透過 `bpin` 來增加 ref count，是要防止這個 buffer 在 transaction 結束前被踢出 cache
-                    - 紀錄的 block 數量加一
 4. Explain the importance of calling `brelse` after you are done with a buffer from `bread`.
 
     可以從 `brelse` 的過程來回答這個問題
@@ -628,9 +673,9 @@
         - 過程會
             - 先取得 `struct log` 的鎖，防止大家同時修改
             - while loop
-                - 檢查系統是否正在提交，如果正在提交，呼叫 sleep(&log, &log.lock)，釋放鎖並進入睡眠狀態，等提交完成後被喚醒
-                - 檢查日誌空間是否足夠，主要是計算目前已經佔用的空間加上本次操作加上所有正在進行的操作所需的最大預留空間是否超過 LOGSIZE。如果空間不足，同樣呼叫 sleep(&log, &log.lock)
-                - 前面檢查都通過的話，增加 log.outstanding
+                - 檢查系統是否正在提交，如果正在提交，呼叫 `sleep(&log, &log.lock)`，釋放鎖並進入睡眠狀態，等提交完成後被喚醒
+                - 檢查日誌空間是否足夠，主要是計算目前已經佔用的空間加上本次操作加上所有正在進行的操作所需的最大預留空間是否超過 LOGSIZE。如果空間不足，同樣呼叫 `sleep(&log, &log.lock)`
+                - 前面檢查都通過的話，增加 `log.outstanding`
                 - 釋放鎖並退出 while 循環
         - 確保以下兩點 process 才會繼續執行
             - 系統目前沒有在提交，不然就要等待
@@ -644,18 +689,18 @@
                
                 **log.lh 是 RAM 中用來追蹤目前未提交 transaction metadata**
 
-                **log.lh.n 就是內存中日誌頭的區塊計數 **
+                **log.lh.n 就是內存中日誌頭的區塊計數**
             - 如果 block 是第一次被記錄到，那就呼叫 `bpin(b)` 增加這個緩衝區在 buffer cache 內的計數，防止它在提交前被換出去
     - end_op()：目的是管理 transaction 的最後流程，並且在條件成立下進行 commit
         - 過程會
             - 取得 `log` 鎖
-            - 減少 log.outstanding
-            - 決定是否觸發 commit
-                - 確認沒有 log.committing，防止嵌套 committ
-                - 如果 log.outstanding == 0 表示目前沒有其他 process 在做 file system 的修改，設定 do_commit 跟 log.committing
-                - 如果未歸零，則 end_op 會喚醒任何可能在 begin_op 中等待日誌空間的 process，然後退出
+            - 減少 `log.outstanding`
+            - 決定是否觸發 `commit`
+                - 確認沒有 `log.committing`，防止嵌套 committ
+                - 如果 `log.outstanding == 0` 表示目前沒有其他 process 在做 file system 的修改，設定 `do_commit` 跟 `log.committing`
+                - 如果未歸零，則 `end_op` 會喚醒任何可能在 `begin_op` 中等待日誌空間的 process，然後退出
             - 釋放 `log` 鎖
-            - 如果有設定 do_commit 就執行 `commit()` （實作在 `kernel/log.c`）
+            - 如果有設定 `do_commit` 就執行 `commit()` （實作在 `kernel/log.c`）
             - `commit()` 又分為四個階段
                 - write_log()：把所有被修改的緩衝區內容複製並寫入到“磁碟上”的日誌區
                     ```c
@@ -737,7 +782,7 @@
                     - transaction 也透過 `write_head` 提交
                     - 變更數據也透過 `install_trans` 寫到最終位置了
                 - write_head()
-                    - 在這邊最重要的事情是會把 `hb -> n` 設為 0，來清空 disk 上的日誌頭並且標記為空閒
+                    - 在這邊最重要的事情是會把 `hb -> n` （disk 上的 log 空間）設為 0，來清空 disk 上的日誌頭並且標記為空閒
             - `recover_from_log` 是在系統啟動時執行，這樣可以確保如果上一次系統崩潰時還沒完成的 transaction 可以完成
                 ```c
                 static void
@@ -799,13 +844,13 @@
         ```
         - 一開始先取得鎖
         - 接著去遍歷整個 inode table 看看有沒有需要的 inode
-            - 如果找到那就增加 ip -> ref，並釋放鎖及回傳 ip（這邊要注意，是透過 ip -> ref 來判定 inode 是否有在被使用）
+            - 如果找到那就增加 `ip -> ref`，並釋放鎖及回傳 ip（這邊要注意，是透過 `ip -> ref` 來判定 inode 是否有在被使用）
             - 在這個過程中，會去紀錄找到第一個空閒的 slot
 
                 **為什麼找到空閒的 slot 之後不直接 break 呢？**
 
                 **因為這比較像是備用的方案，首要目標是找到 inode，找不到才會使用空閒的 slot**
-        - 如果遍歷後還是找不到，那就 panic
+        - 如果遍歷後還是找不到，那就 `panic`
         - 接著就是使用找到的第一個空閒的 slot 來儲存新的 inode
             - 設置 `dev`
             - 設置 `inum`
@@ -846,24 +891,26 @@
         ```
         - 取得鎖
         - 檢查條件
-            - ip -> ref == 1，表示只有當前執行 iput 的 process 對這個 inode 的做引用
-            - ip -> valid，確保 inode 包含有效的 disk metadata
-            - ip -> nlink == 0，表示檔案系統中已經沒有任何 directory entry 指向這個 inode
+            - `ip -> ref == 1`，表示只有當前執行 `iput` 的 process 對這個 inode 的做引用
+            - `ip -> valid`
+                - 確保 `inode` 的內容已經從 disk 載入到 memory
+                - memory 中的 `ip->type`, `ip->size`, `ip->addrs[]` 等欄位是有效的
+            - `ip -> nlink == 0`，表示檔案系統中已經沒有任何 directory entry 指向這個 inode
         - 條件成立的話
             - 鎖定 inode
             - 釋放 itable 鎖
             - 透過 itrunc 釋放 inode 佔有的 block
-            - 將 ip -> type 設為 0，代表空閒
-            - 透過 iupdate 把變更寫入日誌，之後才會寫回 disk
-            - 將 valid 改為 0
+            - 將 `ip -> type` 設為 0，代表空閒
+            - 透過 `iupdate` 把變更寫入日誌，之後才會寫回 disk
+            - 將 `valid` 改為 0
         - 不論條件是否成立
-            - ip -> ref 扣 1
+            - `ip -> ref` 減 1
             - 釋放 itable 的鎖
     - inode 中 ref 的目的是要紀錄有多少 process 或是其他結構在使用這個 inode，以確保 inode 在被使用期間不被回收，並在 ref 歸零時允許 itable slot 被重複使用，或在硬連結數（nlink）同時歸零時觸發磁碟資源的永久清理。
 
 
 #### Implementation
-我們依照 implementation 要修改的檔案依依說明，要修改的有：
+我們依照 implementation 要修改的檔案一一說明，要修改的有：
 - kernel/fs.h
 - kernel/file.h
 - kernel/fs.c 中的 bmap() 以及 itrunc()
@@ -887,7 +934,7 @@
 
     NFINDIRECT = Number of First-level Indirect block pointers
 
-    NFINDIRECT = Number of Doubly-Indirect block pointers
+    NDINDIRECT = Number of Doubly-Indirect block pointers
 
     透過這樣的組合，一個檔案的容量可以達到 66823 個 data blocks。
 - MAXFILE 部分
@@ -919,114 +966,114 @@
     uint addrs[NDIRECT + NFINDIRECT + NDINDIRECT];
     ```
 
-再來是 `kernel/fs.c` 中的 bmap()
+再來是 `kernel/fs.c` 中的 `bmap()`
 
 `bmap` 的任務是幫 inode 的 bn(logic) 找到對應的 physical block number，我們一樣可以把這個任務分為三階段來看
 - NDIRECT：如果 bn 小於 `NDIRECT` 那代表是直接區塊，跟原本的做法沒什麼不同，直接從 ip->addrs[bn] 讀取或分配
 - NFINDIRECT：如果 bn 不小於 `NDIRECT` 那代表不是直接區塊（有可能是一級區塊或是二級區塊），為了要做這個判斷，首先要把 bn -= NDIRECT，接下來會經過幾個步驟
     - 透過 if 判斷 bn 是否小於 NFINDIRECT * NINDIRECT，如果是則代表在一級區塊
-    ```c
-    if(bn < NFINDIRECT * NINDIRECT)
-    ```
+        ```c
+        if(bn < NFINDIRECT * NINDIRECT)
+        ```
     - 計算是第幾個 singly indirect block，透過 `bn / NINDIRECT` 可以知道這是第幾個 SIB
-    ```c
-    uint sib_index = NDIRECT + (bn / NINDIRECT);
-    ```
+        ```c
+        uint sib_index = NDIRECT + (bn / NINDIRECT);
+        ```
     - 計算在 single idnex block 中的偏移量
-    ```c
-    uint sib_offset = bn % NINDIRECT;
-    ```
+        ```c
+        uint sib_offset = bn % NINDIRECT;
+        ```
     - 檢查 singly indirect block 本身是否已經被分配了 physical block，若無的話透過 `balloc` 分配，`balloc` 回傳是 block number，所以之後要透過 `bread` 將這個 block number 的資料讀出來
-    ```c
-    if((addr = ip->addrs[sib_index]) == 0){
-      addr = balloc(ip->dev);
-      if(addr == 0)
-        return 0;
-      ip->addrs[sib_index] = addr;
-    }
-    ```
+        ```c
+        if((addr = ip->addrs[sib_index]) == 0){
+            addr = balloc(ip->dev);
+            if(addr == 0)
+                return 0;
+            ip->addrs[sib_index] = addr;
+        }
+        ```
     - 確認有分配或是分配完成後，透過 `bread` 將 physical block 放到 memory buffer 中，並且透過 sib_a 指標指向整個 singly indirect block 的開頭（實際是包含 256 個 data block）
-    ```c
-    struct buf *sib_bp = bread(ip->dev, addr);
-    uint *sib_a = (uint*)sib_bp->data;
-    ```
+        ```c
+        struct buf *sib_bp = bread(ip->dev, addr);
+        uint *sib_a = (uint*)sib_bp->data;
+        ```
     - 將 singly indirect block 讀出來後，再透過 `sib_offset` 檢查是否已經有分配 physical block 了
         - 沒有的話  
             - 透過 `balloc` 分配，並且修改 `sib_bp` 的 data 內容
             - 注意因為這邊修改了透過 `bread` 讀進來的 on-disk data structure，需要呼叫 `log_write` 來寫回磁碟
         - 有的話就不需要做分配
-        ```c
-        if((addr = sib_a[sib_offset]) == 0){
-            addr = balloc(ip->dev);
-            if(addr){
-                sib_a[sib_offset] = addr;
-                // 因為修改 disk 上的資料結構，所以要寫到 log 中
-                log_write(sib_bp);
+            ```c
+            if((addr = sib_a[sib_offset]) == 0){
+                addr = balloc(ip->dev);
+                if(addr){
+                    sib_a[sib_offset] = addr;
+                    // 因為修改 disk 上的資料結構，所以要寫到 log 中
+                    log_write(sib_bp);
+                }
             }
-        }
-        ```
+            ```
     - 透過 `brelse` 釋放 `sib_bp` 這個 buffer
-    ```c
-    brelse(sib_bp);
-    ```
+        ```c
+        brelse(sib_bp);
+        ```
     - return logic block number 對應的 physical block number
-    ```c
-    return addr;
-    ```
+        ```c
+        return addr;
+        ```
 - NDINDIRECT：如果 bn 不是直接區塊也不是一級區塊，那 bn 會經過兩次調整。首先是 bn -= NDIRECT，再來是 bn -= NFINDIRECT * NINDIRECT（排除一級區塊），接下來會經過幾個步驟
     - 判斷調整後的 bn 是否在二級區塊的範圍內 (< 65536)
-    ```c
-    if(bn < NINDIRECT * NINDIRECT)
-    ```
-    - 透過 dib_index 表示 DIB（doubly indirect block）在 ip -> addrs 中的 index
-    ```c
-    uint dib_index = NDIRECT + NFINDIRECT;
-    ```
+        ```c
+        if(bn < NINDIRECT * NINDIRECT)
+        ```
+    - 透過 dib_index 表示 DIB（doubly indirect block）在 ip -> addrs 中的 index，只有一個所以可以這樣算
+        ```c
+        uint dib_index = NDIRECT + NFINDIRECT;
+        ```
     - 如果 ip->addrs[dib_index] 還沒分配 physical block 就要透過 `balloc` 分配
-    ```c
-    if((addr = ip->addrs[dib_index]) == 0){
-      addr = balloc(ip->dev);
-      if(addr == 0)
-        return 0;
-      ip->addrs[dib_index] = addr;
-    }
-    ```
+        ```c
+        if((addr = ip->addrs[dib_index]) == 0){
+            addr = balloc(ip->dev);
+            if(addr == 0)
+                return 0;
+            ip->addrs[dib_index] = addr;
+        }
+        ```
     - 確認有分配或是分配完成後，透過 `bread` 將 physical block 放到 memory buffer 中，並且透過 dib_a 指標指向整個 doublely indirect block 的開頭（實際是包含 256 個 SIB 指標的陣列）
-    ```c
-    struct buf *dib_bp = bread(ip->dev, addr);
-    uint *dib_a = (uint*)dib_bp->data;
-    ```
+        ```c
+        struct buf *dib_bp = bread(ip->dev, addr);
+        uint *dib_a = (uint*)dib_bp->data;
+        ```
     - 計算是第幾個 singly indirect block，透過 `bn / NINDIRECT` 可以知道這是第幾個 SIB
-    ```c
-    uint sib_index_in_dib = bn / NINDIRECT;
-    ```
+        ```c
+        uint sib_index_in_dib = bn / NINDIRECT;
+        ```
     - 計算在 single idnex block 中的偏移量
-    ```c
-    uint data_offset_in_sib = bn % NINDIRECT;
-    ```
+        ```c
+        uint data_offset_in_sib = bn % NINDIRECT;
+        ```
     - 如果 singly indirect block（sib_index_in_dib） 尚未被分配到 physical block，則透過 `balloc` 分配
-    ```c
-    uint sib_addr;
-    if((sib_addr = dib_a[sib_index_in_dib]) == 0){
-      sib_addr = balloc(ip->dev);
-      if(sib_addr == 0) {
-        brelse(dib_bp);
-        return 0; 
-      }
-      dib_a[sib_index_in_dib] = sib_addr;
-      log_write(dib_bp);
-    }
-    ```
+        ```c
+        uint sib_addr;
+        if((sib_addr = dib_a[sib_index_in_dib]) == 0){
+            sib_addr = balloc(ip->dev);
+            if(sib_addr == 0) {
+                brelse(dib_bp);
+                return 0; 
+            }
+            dib_a[sib_index_in_dib] = sib_addr;
+            log_write(dib_bp);
+        }
+        ```
         - 注意因為這邊修改了透過 `bread` 讀進來的 on-disk data structure，需要呼叫 `log_write` 來寫回磁碟
     - 結束後釋放 buffer cache
-    ```c
-    brelse(dib_bp);
-    ```
+        ```c
+        brelse(dib_bp);
+        ```
     - 讀取 `sib_addr`（可能是原本就分配好或是剛剛透過 `addr` 分配的），並且透過 sib_a 指標指向整個 singly indirect block 的開頭（實際是包含 256 個 data block 號碼的陣列）
-    ```c
-    struct buf *sib_bp = bread(ip->dev, sib_addr);
-    uint *sib_a = (uint*)sib_bp->data;
-    ```
+        ```c
+        struct buf *sib_bp = bread(ip->dev, sib_addr);
+        uint *sib_a = (uint*)sib_bp->data;
+        ```
      - 將 singly indirect block 讀出來後，再透過 `data_offset_in_sib` 檢查是否已經有分配 physical block 了
         - 沒有的話  
             - 透過 `balloc` 分配，並且修改 `sib_bp` 的 data 內容
@@ -1043,17 +1090,17 @@
         }
         ```
     - 透過 `brelse` 釋放 `sib_bp` 這個 buffer
-    ```c
-    brelse(sib_bp);
-    ```
+        ```c
+        brelse(sib_bp);
+        ```
     - return logic block number 對應的 physical block number
-    ```c
-    return addr;
-    ```
+        ```c
+        return addr;
+        ```
 - 若是三個區塊都不符合，則出現 panic
-```c
-panic("bmap: out of range");
-```
+    ```c
+    panic("bmap: out of range");
+    ```
 
 
 
@@ -1070,7 +1117,7 @@ panic("bmap: out of range");
     }
     ```
 - NFINDIRECT：這是 singly indirect block，要做幾個步驟
-    - 把 singly indirect block 透過 `bread` 讀入 buffer 中（bp），必且透過 a 指向 bp -> data（就是 256 個 data block 的指標）
+    - 把 singly indirect block 透過 `bread` 讀入 buffer 中（`bp`），必且透過 a 指向 bp -> data（就是 256 個 data block 的指標）
         ```c
         for(i = NDIRECT; i < NDIRECT + NFINDIRECT; i++){
         if(ip -> addrs[i]){
@@ -1126,7 +1173,7 @@ panic("bmap: out of range");
                 ```c
                     for(j = 0; j < NINDIRECT; j++){
                         if(sib_a[j]){
-                        bfree(ip->dev, sib_a[j]);
+                            bfree(ip->dev, sib_a[j]);
                         }
                     }
                 ```
@@ -1176,23 +1223,23 @@ panic("bmap: out of range");
             }
             ```
             
-            create 在 `kernel/sysfile.c` 中，會做以下步驟：
+            `create` 在 `kernel/sysfile.c` 中，會做以下步驟：
             - 尋找 path 的父目錄
             - 鎖定父目錄
             - 檢查目標名稱是否已存在，且類型符合要求
-                - 需要建立的 type 是 file，T_FILE 或是 T_DEVICE 就直接回傳 inode
+                - 需要建立的 type 是 `T_FILE` 或是 `T_DEVICE` 就直接回傳 inode
                 - 否則回傳 0
             - 如果要的目標名稱不存在，那就建立一個新的 inode
             - 初始化 inode 的屬性
             - 將 inode 更新到磁碟
             - 如果建立的是目錄，需要在內部建立跟自己（.）以及父目錄（..）的連結（透過 inode number）
-                - 這邊要注意的是自己跟自己連結，不需要增加 nlink 計數
+                - **這邊要注意的是自己跟自己連結，不需要增加 nlink 計數**
             - 也要將新建立的 inode 加到父目錄中
-                - 這邊的 nlink 增加，已經在初始化 inode 屬性就做了
-            - 增加父目錄的 nlink 計數
+                - 這邊的 `nlink` 增加，已經在初始化 inode 屬性就做了
+            - 增加父目錄的 `nlink` 計數
             - 解鎖並釋放父目錄
             - 另外有一個區塊是 fail，會做：
-                - 將 inode 的 nlink 改為 0
+                - 將 inode 的 `nlink` 改為 0
                 - 寫到 disk
                 - 解鎖然後釋放 inode
                 - 解鎖然後釋放父目錄
@@ -1231,7 +1278,7 @@ panic("bmap: out of range");
                 - 是的話，透過 `CREATE` 建立，失敗的話 `end_op`，回傳 -1
                 - 不是的話，透過 `namei` 去找 inode
                     - 失敗的話 `end_op`，回傳 -1
-                    - 成功的話鎖著找到的 inode，檢查如果是目錄，那 omode 只能是 `O_RDONLY`（如果沒有這樣，那使用者可以透過 open + write 去修改 dirtectory structure，會很危險）
+                    - 成功的話 lock 找到的 inode，檢查如果是目錄，那 `omode` 只能是 `O_RDONLY`（如果沒有這樣，那使用者可以透過 open + write 去修改 dirtectory structure，會很危險）
             ```c
             if(omode & O_CREATE){
                 ip = create(path, T_FILE, 0, 0);
@@ -1252,7 +1299,7 @@ panic("bmap: out of range");
                 }
             }
             ```
-        - 檢查設備檔案，防止開啟無效的
+        - 檢查設備檔案，防止開啟無效的設備檔案
             ```c
             if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
                 iunlockput(ip);
@@ -1260,7 +1307,7 @@ panic("bmap: out of range");
                 return -1;
             }
             ```
-        - 透過 filealloc 從系統的 file table 中分配一個 struct file 及透過 fdalloc(f) 從 process 的 file descriptor table 分配一個 fd 編號。如果任一失敗那就要清理資源並回傳 -1
+        - 透過 `filealloc` 從系統的 file table 中分配一個 struct file 及透過 `fdalloc(f)` 從 process 的 file descriptor table 分配一個 fd 編號。如果任一失敗那就要清理資源並回傳 -1
             ```c
             if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
                 if(f)
@@ -1272,7 +1319,7 @@ panic("bmap: out of range");
             ```
         ##### 接下來是 part 2 新增的部分
         - 如果 ip -> type == T_SYMLINK，就要接著做判斷
-            - 如果 omode 是 O_NOFOLLOW 代表步搖追蹤符號連結，那就要：
+            - 如果 omode 是 O_NOFOLLOW 代表不要追蹤符號連結，那就要：
                 - 釋放 inode
                 - 結束操作並回傳 -2
                     ```c
@@ -1284,10 +1331,10 @@ panic("bmap: out of range");
                     }
                     ```
             - 否則的話，進入 for loop
-                - 透過 readi 把符號連結的內容（一個路徑字串）讀到 target
+                - 透過 `readi` 把符號連結的內容（一個路徑字串）讀到 target
                 - 釋放 inode，這是目前的符號連結 inode（前面有把 ip 鎖起來）
-                - 透過 namei 將 target 對應的 inode 找出來（將其變成新一輪的 inode）
-                - 把 inode 在鎖起來
+                - 透過 `namei` 將 target 對應的 inode 找出來（將其變成新一輪的 inode）
+                - 把 inode 再鎖起來
                 - 如果 ip -> type 不是 T_SYMLINK 就跳出 for loop，或是 depth >= 5 也會跳出
             - 檢查 depth 
                 - 如果大於等於 5 就結束操作並回傳 -3
@@ -1361,7 +1408,286 @@ panic("bmap: out of range");
                         end_op();      // 結束 transaction
                         return fd;     // 回傳 file descriptor 給使用者
                         ```
-                    
+# Part 3
+#### Implementation
+這部分我們需要先釐清 Part2 和 Part3 需求的不同：
+- Part2 是需要解析 path 路徑中最終 file 的符號連結
+- Part3 是需要解析在 path 中間所遇到的符號連結
+
+因此這邊需要做好分工：
+- namex(`kernel/fs.c`)：只解析「path 中間」的符號連結
+    - 如果遇到符號連結且後面還有路徑，就要進行符號的跳轉。
+    - 但如果這是路徑的最後一個元素，就要回傳該 inode 給 sys_open 或 sys_chdir
+- sys_chdir(`kernel/sysfile.c`)：解析最終目標
+
+所以這邊需要修改 `sys_chdir` 以及 `namex` 兩個函數
+- `sys_chdir`
+
+    原本的程式
+    ```c
+    uint64
+    sys_chdir(void)
+    {
+        // TODO: Symbolic Link to Directories
+        // You can modify this to cd into a symbolic link
+        // The modification may not be necessary,
+        // depending on you implementation.
+        char path[MAXPATH];
+        struct inode *ip;
+        struct proc *p = myproc();
+
+        begin_op();
+        // namei 回傳路徑中最後一個 element 的 inode
+        if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
+            end_op();
+            return -1;
+        }
+        ilock(ip);
+        // 如果發現最後要 cd 的 inode 根本不是 directory
+        if(ip->type != T_DIR){
+            iunlockput(ip);
+            end_op();
+            return -1;
+        }
+        iunlock(ip);
+        iput(p->cwd);
+        end_op();
+        // 修改 cwd
+        p->cwd = ip;
+        return 0;
+    }
+    ```
+
+    需要新增如果透過 `namei` 呼叫 `namex` 後回傳的 inode type 是 `T_SYMLINK` 的處理
+    ```c
+    uint64
+    sys_chdir(void)
+    {
+        // TODO: Symbolic Link to Directories
+        // You can modify this to cd into a symbolic link
+        // The modification may not be necessary,
+        // depending on you implementation.
+        char path[MAXPATH];
+        struct inode *ip;
+        struct proc *p = myproc();
+        
+        begin_op();
+        if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
+            // 透過 namei 會找到符號連結指向的目標並且返回為 ip
+            end_op();
+            return -1;
+        }
+        
+        ilock(ip);
+        
+        + // 如果是 symlink，追蹤它
+        + if(ip->type == T_SYMLINK){
+        +     char target[MAXPATH];
+        +     int depth;
+            
+        +     for(depth = 0; depth < 5; depth++){
+        +       if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+        +           iunlockput(ip);
+        +           end_op();
+        +           return -1;
+        +       }
+            
+        +       iunlockput(ip);
+            
+        +       if((ip = namei(target)) == 0){
+        +           end_op();
+        +           return -1;
+        +       }
+            
+        +       ilock(ip);
+            
+        +       if(ip->type != T_SYMLINK){
+        +           break;
+        +       }
+        +     }
+            
+        +     if(depth >= 5){
+        +     iunlockput(ip);
+        +     end_op();
+        +     return -1;
+        +     }
+        + }
+        
+        if(ip->type != T_DIR){
+            iunlockput(ip);
+            end_op();
+            return -1;
+        }
+        
+        iunlock(ip);
+        iput(p->cwd);
+        end_op();
+        p->cwd = ip;
+        return 0;
+    }
+    ```
+
+    新增的部分跟 sys_open 中在做 symlink 的追蹤是相同的，會不斷追蹤直到超過五層或是 type 不是 `T_SYMLINK`
+
+- `namex`
+    
+    原本的程式
+    ```c
+    static struct inode*
+    namex(char *path, int nameiparent, char *name)
+    {
+        // TODO: Symbolic Link to Directories
+        // Modify this function to deal with symbolic links to directories.
+        struct inode *ip, *next;
+
+        if(*path == '/')
+            // 從根目錄開始解析路徑
+            // iget 的目的是在 inode table 中找到對應的 inode並將他的 ref +1
+            // root directory 不確定是否已經在 inode table 中
+            ip = iget(ROOTDEV, ROOTINO);
+        else
+            // 從當前工作目錄開始解析路徑
+            // 會用 idup 是因為目前已經持有自己的 cwd
+            // idup 的作用是增加一個 「已經存在且已經被打開」的 inode 的 ref 計數
+            ip = idup(myproc()->cwd);
+
+        while((path = skipelem(path, name)) != 0){
+            // skipelem 每次會把一個路徑字串的第一個 element 取出來放到 name 中
+            // 回傳新的 path 字串（去掉剛剛取出的 element）
+            ilock(ip);
+            // 如果不是目錄就錯誤
+            // 在整個解析的過程，只有最後一個元素可以不是目錄
+            if(ip->type != T_DIR){
+                iunlockput(ip);
+                return 0;
+            }
+            // 因為 nameiparent 的話，只需要找到 parent 就好
+            // 但 path == '\0' 代表已經沒有路徑了
+            // 例如 a/b/c ，當解析到 c 的時候，path 就會是 '\0'
+
+            if(nameiparent && *path == '\0'){
+                iunlock(ip);
+                return ip;
+            }
+                // 在當前的目錄中尋找剛取出來的 element
+            if((next = dirlookup(ip, name, 0)) == 0){
+                iunlockput(ip);
+                return 0;
+            }
+            iunlockput(ip);
+            ip = next;
+        }
+        if(nameiparent){
+            iput(ip);
+            return 0;
+        }
+        return ip;
+    }
+    ```
+
+    原本程式只是要去將 path 解析成對應的 inode，所以這邊主要是新增路徑中間元素遇到符號連結的處理以及嵌套的符號連結
+    
+    （例如: a/b/c，其中 a -> d -> e -> f），針對這種情況採用的是重置路徑並重新開始解析
+
+    修改過後的程式
+    ```c
+    static struct inode*
+    namex(char *path, int nameiparent, char *name)
+    {
+        // TODO: Symbolic Link to Directories
+        // Modify this function to deal with symbolic links to directories.
+        struct inode *ip, *next;
+        
+        // Implementation 3
+        int depth = 0;
+        // char *orig_path = path; // 保留原始路徑指標
+
+        restart: // 重新開始解析的標籤
+        if(*path == '/')
+            // 從根目錄開始解析路徑
+            // iget 的目的是在 inode table 中找到對應的 inode並將他的 ref +1
+            // root directory 不確定是否已經在 inode table 中
+            ip = iget(ROOTDEV, ROOTINO);
+        else
+            // 從當前工作目錄開始解析路徑
+            // 會用 idup 是因為目前已經持有自己的 cwd
+            // idup 的作用是增加一個 「已經存在且已經被打開」的 inode 的 ref 計數
+            ip = idup(myproc()->cwd);
+
+        while((path = skipelem(path, name)) != 0){
+            // skipelem 每次會把一個路徑字串的第一個 element 取出來放到 name 中
+            // 回傳新的 path 字串（去掉剛剛取出的 element）
+            ilock(ip);
+            // 如果不是目錄就錯誤
+            // 在整個解析的過程，只有最後一個元素可以不是目錄
+            if(ip->type != T_DIR){
+                iunlockput(ip);
+                return 0;
+            }
+            // 因為 nameiparent 的話，只需要找到 parent 就好
+            // 但 path == '\0' 代表已經沒有路徑了
+            // 例如 a/b/c ，當解析到 c 的時候，path 就會是 '\0'
+
+            if(nameiparent && *path == '\0'){
+                iunlock(ip);
+                return ip;
+            }
+            
+            // 在當前的目錄中尋找剛取出來的 element
+            if((next = dirlookup(ip, name, 0)) == 0){
+                iunlockput(ip);
+                return 0;
+            }
+            iunlockput(ip);
+            // 修改 ip
+            ip = next;
+
+            + // 代表現在在解析的路徑不是最後一個 element
+            + if(*path != '\0'){ 
+            + ilock(ip);
+            + if(ip->type == T_SYMLINK){
+            +     // 防止無限迴圈
+            +     if(++depth >= 5){
+            +         iunlockput(ip);
+            +         return 0;
+            +     }
+
+            +     char target[MAXPATH];
+            +     // 讀取連結內容 (例如 "e/f")
+            +     if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+            +         iunlockput(ip);
+            +         return 0;
+            +     }
+            +     iunlockput(ip);
+
+            +     // 拼接路徑
+            +     static char new_path[MAXPATH];
+            +     // 先放 target
+            +     safestrcpy(new_path, target, MAXPATH);
+            +     // 如果原本還有剩下的 path，拼接上去 (例如 "/b/c")
+            +     if(*path != '\0'){
+            +         int len = strlen(new_path);
+            +         if(len < MAXPATH - 1){
+            +             new_path[len] = '/';
+            +             safestrcpy(new_path + len + 1, path, MAXPATH - len - 1);
+            +         }
+            +     }
+
+            +     // 重置路徑指標並跳回開頭重新解析
+            +     path = new_path;
+            +     goto restart; 
+            + }
+            + iunlock(ip);
+            + }
+        }
+
+        if(nameiparent){
+            iput(ip);
+            return 0;
+        }
+        return ip;
+    }
+    ```
 
 
 
