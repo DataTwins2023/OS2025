@@ -9,26 +9,42 @@ unsigned long long Transformer::producer_transform(char opcode, unsigned long lo
 	switch (opcode) {
 	// same speed
 	case 'A':
-		spec->a = 11;
-		spec->b = 1111;
+		spec->a = 2003;
+		spec->b = 183492;
 		spec->m = 1000000007;
-		spec->iterations = 10000000;
+		spec->iterations = 9000000;
 		break;
 
-	// same speed
+	// consumer faster than producer
 	case 'B':
-		spec->a = 13;
-		spec->b = 1313;
-		spec->m = 1000000007;
-		spec->iterations = 10000000;
+		spec->a = 2143;
+		spec->b = 191324;
+		spec->m = 1000000009;
+		spec->iterations = 12000000;
 		break;
 
-	// same speed
+	// producer faster than consumer
 	case 'C':
-		spec->a = 17;
-		spec->b = 1717;
-		spec->m = 1000000007;
-		spec->iterations = 10000000;
+		spec->a = 2089;
+		spec->b = 923134;
+		spec->m = 1000000021;
+		spec->iterations = 5000000;
+		break;
+
+	// producer slightly faster than consumer
+	case 'D':
+		spec->a = 2677;
+		spec->b = 912834;
+		spec->m = 1000000033;
+		spec->iterations = 7000000;
+		break;
+
+	// consumer slightly faster than producer
+	case 'E':
+		spec->a = 2693;
+		spec->b = 718341;
+		spec->m = 1000000087;
+		spec->iterations = 12000000;
 		break;
 
 	default:
@@ -44,26 +60,42 @@ unsigned long long Transformer::consumer_transform(char opcode, unsigned long lo
 	switch (opcode) {
 	// same speed
 	case 'A':
-		spec->a = 19;
-		spec->b = 1919;
-		spec->m = 1000000007;
-		spec->iterations = 10000000;
+		spec->a = 2729;
+		spec->b = 713423;
+		spec->m = 1000000093;
+		spec->iterations = 9000000;
 		break;
 
-	// same speed
+	// consumer faster than producer
 	case 'B':
-		spec->a = 23;
-		spec->b = 2323;
-		spec->m = 1000000007;
-		spec->iterations = 10000000;
+		spec->a = 2617;
+		spec->b = 193424;
+		spec->m = 1000000097;
+		spec->iterations = 5000000;
 		break;
 
-	// same speed
+	// producer faster than consumer
 	case 'C':
-		spec->a = 29;
-		spec->b = 2929;
-		spec->m = 1000000007;
-		spec->iterations = 10000000;
+		spec->a = 2053;
+		spec->b = 743142;
+		spec->m = 1000000103;
+		spec->iterations = 12000000;
+		break;
+
+	// producer slightly faster than consumer
+	case 'D':
+		spec->a = 2347;
+		spec->b = 617345;
+		spec->m = 1000000123;
+		spec->iterations = 12000000;
+		break;
+
+	// consumer slightly faster than producer
+	case 'E':
+		spec->a = 2521;
+		spec->b = 4719832;
+		spec->m = 1000000181;
+		spec->iterations = 7000000;
 		break;
 
 	default:

@@ -2,11 +2,11 @@
 
 ## 組員貢獻度表格
 
-| 貢獻項目 | 名字 | 系所 |
-|---------|------|------|
-| Implementation | 吳征彥、許恩嘉 | 資工碩二、資應碩二 |
-| Experiment |  吳征彥、許恩嘉 | 資工碩二、資應碩二 |
-| Report |  吳征彥、許恩嘉 | 資工碩二、資應碩二 |
+| 貢獻項目 | 名字 | 系所 |名字 | 系所 |
+|---------|------|------|------|------|
+| Implementation |吳征彥|資工碩二|許恩嘉|資應碩二 |
+| Experiment |吳征彥|資工碩二|許恩嘉|資應碩二 |
+| Report |吳征彥|資工碩二| 許恩嘉|資應碩二 |
 
 
 # Experiment
@@ -25,7 +25,7 @@ original experiments parameters
 <img src="images/base.png" width="25%">  
 
 #### Discussion 0
-一開始系統沒有consumer thread，producer thread會一直丟items進 worker_queue，等到 worker_queue 滿八成以上同時 controller 到它的 check period 的時候，  
+一開始系統沒有 `consumer thread`，`producer thread` 會一直丟 items 進 `worker_queue`，等到 `worker_queue` 滿八成以上且同時 controller 到它的 check period 的時候，  
 會觸發 controller 做 consumer 數量的 scale up. 第一行一定是: `scaling up consumers from 0 to 1`.
 
 ### Different values of CONSUMER_CONTROLLER_CHECK_PERIOD
@@ -84,7 +84,8 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 3
-![image3](images/threshold45_55.png)
+<img src="images/threshold45_55.png" width="25%">
+
 #### Discussion 3 
 實驗結果顯示，相較於 `Experiment 0` controller 一開始確實更頻繁的去 scaling up。  
 
@@ -92,7 +93,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 
 #### Experimental setting 4
 同時將 low threshold 調低，high threshold 調高 -> 平均來說更不容易因為 worker_queue 的 items 量變化去 trigger controller.  
-換句話說，controller會比較少干涉 controller 的數量只有在極端情況(*小於5%*或*大於95%*)才會去做scale consumer的操作。  
+換句話說，controller 會比較少干涉 controller 的數量只有在極端情況(*小於5%*或*大於95%*)才會去做 scale consumer 的操作。  
 ```cpp
 #define READER_QUEUE_SIZE 200
 #define WORKER_QUEUE_SIZE 200
@@ -105,11 +106,11 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 <img src="images/threshold5_95.png" width="25%">
 
 #### Discussion 4 
-實驗結果顯示，相較於上一個實驗設定(experiment 3) 整個過程中 controller 確實沒那麼頻繁的去做 scaling 的操作。
+實驗結果顯示，相較於上一個實驗設定(*experiment 3*) 整個過程中 controller 確實沒那麼頻繁的去做 scaling 的操作。
 任務完成時間也相對較長。    
 ### Different values of WORKER_QUEUE_SIZE
 #### Experimental setting 5
-把 worker_queue 的 size 調降成原來的 1/10。只要 worker_queue 的負載超過 16 個 items，controller 就會做 scaling up，  
+把 worker_queue 的 size 調降成原來的 1/10, `check period = 100`。只要 worker_queue 的負載超過 16 個 items，controller 就會做 scaling up，  
 另一方面，只要負載低於 4 個，controller 便會做 Scaling down。
 ```cpp
 #define READER_QUEUE_SIZE 200
@@ -117,79 +118,78 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 #define WRITER_QUEUE_SIZE 4000
 #define CONSUMER_CONTROLLER_LOW_THRESHOLD_PERCENTAGE 20
 #define CONSUMER_CONTROLLER_HIGH_THRESHOLD_PERCENTAGE 80
-#define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
+#define CONSUMER_CONTROLLER_CHECK_PERIOD 100
 ```
 #### Experimental result 5
-![image5](images/workerQsize20.png)
+<img src="images/res_exp5.png" width="25%">
+
 #### Discussion 5
 從實驗結果顯示，對於大小只有 20 的 worker_queue 前期相對容易被填八成滿，controller 做連續的 scaling up。
-沒有 scaling down 的操作，原因是因為整個任務在下一次的 check period 內就結束了，  
-所以觀察不到 worker_queue items 剩下 4 個以下而 controller 去做 scaling down 的輸出。 
+當 `comsumer thread` 達到 5 個時，`worker_queue` items 處於**出超**狀態一陣子，導致後續的一連串 scaling down 的操作，
+當 consumer thread 只剩下一個時，`worker_queue` 又處於**入超**狀態一陣子之後，又是連續的 scaling up 操作，  
+原本以為會一直重複如此的週期，但最後系統中的 `consumer thread` 數量變化有需於穩定的趨勢，變動量在 3~5 來回變動。  
+整體向四 4 趨近，推測 `consumer thread` 最穩定的數量應該是與 `producer thread` 一樣。   
+由於 `worker_queue` size 較小，所以相對容易觸發 scaling 操作，可以在這個 case 觀察到比較明顯的波動。   
 
 
 #### Experimental setting 6
-將 worker_queue 增加 40 個位置的大小。只有 worker_queue 的負載在 192 以上時 controller 才會 scaling up。  
-為了讓系統能夠順利運作 worker_queue 的 size 是有 upper bound 的如果 `input file` 的總行數為 *n* ， WORKER_QUEUE_SIZE <= *n\*80%*，  
-如果 WORKER_QUEUE_SIZE 大於這個數字，即使全部 items 都已 enqueue 進 controller 也不會配置任何 consumer，整個系統會因為缺乏 consumer 而卡住。  
+將 `worker_queue` 增加 40 個位置的大小，且 `check period = 100` 。只有 `worker_queue` 的負載在 192 以上時 controller 才會 scaling up。  
+為了讓系統能夠順利運作 worker_queue 的 size 是有 upper bound 的如果 `input file` 的總行數為 *n* ， *WORKER_QUEUE_SIZE <= n\*80%*，  
+如果 WORKER_QUEUE_SIZE 大於這個數字，即使全部 items 都已 enqueue 進 controller 也不會配置任何 consumer，整個系統會因為無 `consumer thread` 而卡住。  
 ```cpp
 #define READER_QUEUE_SIZE 200
 #define WORKER_QUEUE_SIZE 240
 #define WRITER_QUEUE_SIZE 4000
 #define CONSUMER_CONTROLLER_LOW_THRESHOLD_PERCENTAGE 20
 #define CONSUMER_CONTROLLER_HIGH_THRESHOLD_PERCENTAGE 80
-#define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
+#define CONSUMER_CONTROLLER_CHECK_PERIOD 100
 ```
 #### Experimental result 6
-<img src="images/wokerQsize240.png" width="25%">  
+<img src="images/res_exp6.png" width="25%">
 
 #### Discussion 6
-從實驗結果看來，整個過程只有一次 scaling up，即 items 超過 192 那一次，  
-在第一次 scaling up 後剩餘在 input_queue 的 items 數也小於等於 4 個 (總共 200 個)。
-整個系統在只有 1 個 consumer 的時候就在下一次check period 之前快速結束。
+從實驗結果看來，系統的表現與 *experiment3* 一樣。只是第一個scaling up 的時間點會稍晚。  
+後續系統行為與 `WORKER_QUEUE_SIZE = 200` 時差異不大。
 
 ### WRITER_QUEUE_SIZE is very small
 #### Experimental setting 7
-將 writer_queue 的size變成原來的 1/1000。  
+將 writer_queue 的size變成原來的 `1/1000` 且 `check period = 100`。  
 ```cpp
 #define READER_QUEUE_SIZE 200
 #define WORKER_QUEUE_SIZE 200
 #define WRITER_QUEUE_SIZE 4
 #define CONSUMER_CONTROLLER_LOW_THRESHOLD_PERCENTAGE 20
 #define CONSUMER_CONTROLLER_HIGH_THRESHOLD_PERCENTAGE 80
-#define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
+#define CONSUMER_CONTROLLER_CHECK_PERIOD 100
 ```
 #### Experimental result 7
-<img src="images/writterQsize4.png" width="25%">  
+<img src="images/res_exp7.png" width="25%">
 
 #### Discussion 7 
-從 scaling 的結果來看，相較於 experiment 0 沒有什麼太大的變化，因為 writer queue 的 size 只有 4 個，容易成為系統的 bottleneck，連帶影響 `worker_queue`，使它更容易滿，但因為系統設計上有動態調整的機制，所以整體速率維持沒有太大的變化。      
+從 scaling 的結果來看，相較於 *experiment 3* 沒有什麼太大的變化，因為 writer queue 的 size 只有 4 個，容易成為系統的 bottleneck，連帶影響 `worker_queue`，使它更容易滿，但因為系統設計上有動態調整 `consumers` 的機制，所以整體速率維持沒有太大的變化。      
 
 ### READER_QUEUE_SIZE is very small
 #### Experimental setting 8
-將 reader queue size 調整成 5。並跑了多次實驗。
+將 reader queue size 調整成 5 且 `check period = 100`。
 ```cpp
 #define READER_QUEUE_SIZE 5
 #define WORKER_QUEUE_SIZE 200
 #define WRITER_QUEUE_SIZE 4000
 #define CONSUMER_CONTROLLER_LOW_THRESHOLD_PERCENTAGE 20
 #define CONSUMER_CONTROLLER_HIGH_THRESHOLD_PERCENTAGE 80
-#define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
+#define CONSUMER_CONTROLLER_CHECK_PERIOD 100
 ```
 #### Experimental result 8
-- run 1  
-<img src="images/readerQsize5_1.png" width="25%"> 
- 
-- run 2     
-<img src="images/readerQsize5_2.png" width="25%">  
+<img src="images/res_exp8.png" width="25%">
 
 #### Discussion 8  
-從 scaling 的行為看來，並沒有跟 experiment 0 差太多，  
-input_queue 小的話也會成為系統的 bottleneck，只是因為縮小幅度沒有像 experiment 7 一樣這麼嚴重，  
-整體系統效能只有稍微影響。  
+從 scaling 的行為看來，並沒有跟 *experiment 3* 差太多，  
+*input_queue* 小的話有機會成為系統的 bottleneck，不過 `prducer thread` 在過程中都是屬於充足的狀態，所以瓶頸效應不那麼明顯。
 
 ### Conclusion
-1. 從八次實驗的觀察下來，最直接的觀察其實是縱使程式碼完全一模一樣，run多次，每次 threads 的運作行為也會不一樣，運行結果會受到 run time 時整個系統的狀態，以及 scheduler 的決定不一致，所造成結果是 nondeterministic 的。
-2. 在一開始實作作業時，常常因為同步化沒有處理好產生 Deadlock，必須仔細的理解各個 threads 如何與他們的 **同步化資源** (像是*mutex_lock* 或 *condition variable*) 的互動，以及會有甚麼情況會造成 dealock，實際在實作作業的例子，是在實作 cleanup_handler 前，系統常因為卡在 cond_dequeue 的 consumer 被喚醒後帶著鎖被殺掉，而造成 deadlock，實作玩cleanup_handler後才避免了此問題發生。
+1. 從八次實驗的觀察下來，最直接的觀察其實是縱使程式碼完全一模一樣，run 多次，每次 threads 的運作行為也會不一樣，運行結果會受到 run time 時整個系統的狀態，以及 scheduler 當下地的決定而不一致，所造成結果是 nondeterministic 的。
+2. 動態調整 consumer 的機制會穩定整體系統的 performance，相同 check period 的 cases 之間的執行時間都沒有太大差異。  
+3. 在一開始實作作業時，常常因為同步化沒有處理好產生 deadlock，必須仔細的理解各個 threads 如何與他們的 **同步化資源** (像是*mutex_lock* 或 *condition variable*) 的互動，以及會有甚麼情況會造成 dealock，實際在實作作業的例子，是在實作 cleanup_handler 前，系統常因為卡在 cond_dequeue 的 consumer 被喚醒後帶著鎖被殺掉，而造成 deadlock，實作玩cleanup_handler 後才避免了此問題發生。
 
 
 
