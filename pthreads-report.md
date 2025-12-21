@@ -46,7 +46,7 @@ original experiments parameters
 相較於 experiment 0，由於 check period 更低，controller 更頻繁的去check worker_queue 的狀態，  
 scaling 的操作更為頻繁。  
 從印出的行為上來觀察，分成前後兩個階段:  
-- 第一個階段為一開始 consumer稀缺 -> woker_queue 附載高 -> controller 透過 scaling up 來加速消耗。
+- 第一個階段為一開始 consumer 稀缺 -> woker_queue 負載高 -> controller 透過 scaling up 來加速消耗。
 - 第二個階段為 items 快被拿完 -> worker_queue 的 items 稀缺 -> controller 透過 scaling down 來緩和消耗。
 因為前期有較多的 consumers 整個寫檔案的任務也比較快的完成。   
 
@@ -162,8 +162,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 <img src="images/writterQsize4.png" width="25%">  
 
 #### Discussion 7 
-從 scaling 的結果來看，相較於 experiment 0 沒有什麼太大的變化，當 writer_queue 的 buffer 只剩下 4 個時，
-writer_queue容易變成整個系統的 bottleneck，拖慢整個系統運作速度，花比較久的時間完成檔案的寫入。    
+從 scaling 的結果來看，相較於 experiment 0 沒有什麼太大的變化，因為 writer queue 的 size 只有 4 個，容易成為系統的 bottleneck，連帶影響 `worker_queue`，使它更容易滿，但因為系統設計上有動態調整的機制，所以整體速率維持沒有太大的變化。      
 
 ### READER_QUEUE_SIZE is very small
 #### Experimental setting 8
@@ -177,15 +176,17 @@ writer_queue容易變成整個系統的 bottleneck，拖慢整個系統運作速
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 8
-<img src="images/readerQsize5_1.png" width="25%">  
-
+- run 1  
+<img src="images/readerQsize5_1.png" width="25%"> 
+ 
+- run 2     
 <img src="images/readerQsize5_2.png" width="25%">  
 
-#### Discussion 8 
+#### Discussion 8  
 從 scaling 的行為看來，並沒有跟 experiment 0 差太多，  
 input_queue 小的話也會成為系統的 bottleneck，只是因為縮小幅度沒有像 experiment 7 一樣這麼嚴重，  
 整體系統效能只有稍微影響。  
----
+
 ### Conclusion
 1. 從八次實驗的觀察下來，最直接的觀察其實是縱使程式碼完全一模一樣，run多次，每次 threads 的運作行為也會不一樣，運行結果會受到 run time 時整個系統的狀態，以及 scheduler 的決定不一致，所造成結果是 nondeterministic 的。
 2. 在一開始實作作業時，常常因為同步化沒有處理好產生 Deadlock，必須仔細的理解各個 threads 如何與他們的 **同步化資源** (像是*mutex_lock* 或 *condition variable*) 的互動，以及會有甚麼情況會造成 dealock，實際在實作作業的例子，是在實作 cleanup_handler 前，系統常因為卡在 cond_dequeue 的 consumer 被喚醒後帶著鎖被殺掉，而造成 deadlock，實作玩cleanup_handler後才避免了此問題發生。
