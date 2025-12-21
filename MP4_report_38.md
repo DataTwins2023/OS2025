@@ -1587,31 +1587,24 @@
 
     原本程式只是要去將 path 解析成對應的 inode，所以這邊主要是新增路徑中間元素遇到符號連結的處理以及嵌套的符號連結
     
-    （例如: a/b/c，其中 a -> d -> e -> f），針對這種情況採用的是重置路徑並重新開始解析
+    （例如: a/b/c，其中 a -> d -> e -> f），針對這種情況採用的是單個節點做 traverse，如果沒有超過五層那就繼續往下並且重置深度
 
     修改過後的程式
     ```c
     static struct inode*
     namex(char *path, int nameiparent, char *name)
     {
-        // TODO: Symbolic Link to Directories
-        // Modify this function to deal with symbolic links to directories.
         struct inode *ip, *next;
-        
-        // Implementation 3
-        int depth = 0;
-        // char *orig_path = path; // 保留原始路徑指標
 
-        restart: // 重新開始解析的標籤
+         // 從根目錄開始解析路徑
+        // iget 的目的是在 inode table 中找到對應的 inode並將他的 ref +1
+        // root directory 不確定是否已經在 inode table 中
         if(*path == '/')
-            // 從根目錄開始解析路徑
-            // iget 的目的是在 inode table 中找到對應的 inode並將他的 ref +1
-            // root directory 不確定是否已經在 inode table 中
             ip = iget(ROOTDEV, ROOTINO);
         else
-            // 從當前工作目錄開始解析路徑
-            // 會用 idup 是因為目前已經持有自己的 cwd
-            // idup 的作用是增加一個 「已經存在且已經被打開」的 inode 的 ref 計數
+        // 從當前工作目錄開始解析路徑
+        // 會用 idup 是因為目前已經持有自己的 cwd
+        // idup 的作用是增加一個 「已經存在且已經被打開」的 inode 的 ref 計數
             ip = idup(myproc()->cwd);
 
         while((path = skipelem(path, name)) != 0){
@@ -1624,16 +1617,16 @@
                 iunlockput(ip);
                 return 0;
             }
+
             // 因為 nameiparent 的話，只需要找到 parent 就好
             // 但 path == '\0' 代表已經沒有路徑了
             // 例如 a/b/c ，當解析到 c 的時候，path 就會是 '\0'
-
             if(nameiparent && *path == '\0'){
                 iunlock(ip);
                 return ip;
             }
-            
-            // 在當前的目錄中尋找剛取出來的 element
+
+            // 在當前目錄尋找剛取出來的 element
             if((next = dirlookup(ip, name, 0)) == 0){
                 iunlockput(ip);
                 return 0;
@@ -1642,49 +1635,64 @@
             // 修改 ip
             ip = next;
 
-            + // 代表現在在解析的路徑不是最後一個 element
-            + if(*path != '\0'){ 
-            + ilock(ip);
-            + if(ip->type == T_SYMLINK){
-            +     // 防止無限迴圈
-            +     if(++depth >= 5){
-            +         iunlockput(ip);
-            +         return 0;
-            +     }
+            // 代表現在在解析的路徑不是最後一個 element
+            if(*path != '\0'){ 
+            // 每個 element 的深度獨立計算
+            int depth = 0; 
 
-            +     char target[MAXPATH];
-            +     // 讀取連結內容 (例如 "e/f")
-            +     if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
-            +         iunlockput(ip);
-            +         return 0;
-            +     }
-            +     iunlockput(ip);
+            while(1){
+                ilock(ip);
+                if(ip->type != T_SYMLINK){
+                    iunlock(ip);
+                    // 如果不是連結，代表已解開到真實目錄
+                    break; 
+                }
 
-            +     // 拼接路徑
-            +     static char new_path[MAXPATH];
-            +     // 先放 target
-            +     safestrcpy(new_path, target, MAXPATH);
-            +     // 如果原本還有剩下的 path，拼接上去 (例如 "/b/c")
-            +     if(*path != '\0'){
-            +         int len = strlen(new_path);
-            +         if(len < MAXPATH - 1){
-            +             new_path[len] = '/';
-            +             safestrcpy(new_path + len + 1, path, MAXPATH - len - 1);
-            +         }
-            +     }
+                // 偵測單次 traverse 深度是否超過限制
+                if(++depth >= 5){
+                    iunlockput(ip);
+                    return 0; 
+                }
 
-            +     // 重置路徑指標並跳回開頭重新解析
-            +     path = new_path;
-            +     goto restart; 
-            + }
-            + iunlock(ip);
-            + }
+                char target[MAXPATH];
+                // 讀取連結目標路徑字串
+                if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0){
+                    iunlockput(ip);
+                    return 0;
+                }
+                iunlockput(ip);
+
+                struct inode *tip;
+                // 這邊只要考慮絕對路徑
+                if(target[0] == '/')
+                    tip = iget(ROOTDEV, ROOTINO);
+                else {
+                    tip = iget(ROOTDEV, ROOTINO);
+                }
+
+                char subname[DIRSIZ];
+                char *tptr = target;
+                // 將 target 字串 (如 "d/e/f") 解析成最後一個 inode
+                while((tptr = skipelem(tptr, subname)) != 0){
+                    ilock(tip);
+                    struct inode *tn = dirlookup(tip, subname, 0);
+                    iunlockput(tip);
+                    if((tip = tn) == 0) return 0; // 目標路徑不存在
+                }
+
+                // 更新目前的 ip 為解析後的目標，繼續內層 while(1) 
+                // 這樣可以處理「連結指向連結」的嵌套情況
+                ip = tip;
+            }   
+          }
         }
 
+        // 處理 nameiparent 失敗的情況
         if(nameiparent){
             iput(ip);
             return 0;
         }
+
         return ip;
     }
     ```
