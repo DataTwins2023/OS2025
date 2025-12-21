@@ -847,6 +847,7 @@ namex(char *path, int nameiparent, char *name)
             while(1){
                 ilock(next);
                 if(next->type != T_SYMLINK){
+                    // 不是符號連結，直接跳出
                     iunlock(next);
                     break;
                 }
@@ -867,46 +868,20 @@ namex(char *path, int nameiparent, char *name)
                 target[n] = '\0';
                 iunlockput(next);
                 
-                // 手動解析 target，而不是用 namei
-                // 這樣才能在同一個 depth 計數器下追蹤所有跳轉
-                
-                struct inode *current;
-                if(target[0] == '/')
-                    current = iget(ROOTDEV, ROOTINO);
-                else
-                    current = iget(ROOTDEV, ROOTINO); // 根據 spec，都從 root 開始
+                // 根據 spec，所有路徑都是絕對路徑，從 root 開始
+                struct inode *current = iget(ROOTDEV, ROOTINO);
                 
                 char subname[DIRSIZ];
                 char *tptr = target;
                 
                 // 逐段解析 target 路徑
                 while((tptr = skipelem(tptr, subname)) != 0){
-                    ilock(current);
-                    if(current->type != T_DIR){
-                        iunlockput(current);
-                        iput(ip);
-                        return 0;
-                    }
-                    
-                    struct inode *temp = dirlookup(current, subname, 0);
-                    iunlockput(current);
-                    
-                    if(temp == 0){
-                        iput(ip);
-                        return 0;
-                    }
-                    
-                    current = temp;
-                    
-                    // 如果 target 路徑中間遇到符號連結
-                    // 需要立即處理，並計入當前的 depth
-                    // 例如 正在處理 "d/e" 中的 d，此時 tptr = "e"
-                    // current 指向 d
-                    if(*tptr != '\0'){  // 不是最後一段
+                    // 先處理 current 是否為符號連結
+                    while(1){
                         ilock(current);
+                        
                         if(current->type == T_SYMLINK){
-                            // 發現中間有符號連結，需要跳轉
-                            // 如果 d 是符號連結，就要跳轉
+                            // current 是符號連結，需要跳轉
                             if(++depth >= 5){
                                 iunlockput(current);
                                 iput(ip);
@@ -914,10 +889,8 @@ namex(char *path, int nameiparent, char *name)
                             }
                             
                             char nested_target[MAXPATH];
-                            // 讀取 d 指向的符號連結目標存到 nested_target
                             int nn = readi(current, 0, (uint64)nested_target, 0, MAXPATH);
                             if(nn <= 0 || nn >= MAXPATH){
-                                // 釋放 current（也就是 d）
                                 iunlockput(current);
                                 iput(ip);
                                 return 0;
@@ -939,16 +912,34 @@ namex(char *path, int nameiparent, char *name)
                             
                             // 重新解析拼接後的路徑
                             iput(current);
-                            if(combined[0] == '/')
-                                current = iget(ROOTDEV, ROOTINO);
-                            else
-                                current = iget(ROOTDEV, ROOTINO);
-                            
+                            current = iget(ROOTDEV, ROOTINO);
                             tptr = combined;
-                            continue;  // 重新開始 while 循環
+                            
+                            continue;  // 重新檢查新的 current
                         }
+                        
+                        // current 不是符號連結，檢查是否為目錄
+                        if(current->type != T_DIR){
+                            iunlockput(current);
+                            iput(ip);
+                            return 0;
+                        }
+                        
                         iunlock(current);
+                        break;  // current 是目錄，可以繼續
                     }
+                    
+                    // 現在 current 一定是目錄，可以安全使用 dirlookup
+                    ilock(current);
+                    struct inode *temp = dirlookup(current, subname, 0);
+                    iunlockput(current);
+                    
+                    if(temp == 0){
+                        iput(ip);
+                        return 0;
+                    }
+                    
+                    current = temp;
                 }
                 
                 // target 解析完成
