@@ -14,7 +14,7 @@
 We use `tests/00.in` as the testing data of our experiment  
 
 #### Experimental Result 0
-![image0](images\base.png)
+![image0](images/base.png)
 #### Discussion 0
 一開始系統沒有consumer thread，producer thread會一直丟items進worker_queue，等到worker_queue滿八成以上的時候，  
 會定時觸發 controller 做 consumer 數量的 scale up. 第一行一定是: `scaling up consumers from 0 to 1`.
@@ -31,7 +31,7 @@ We use `tests/00.in` as the testing data of our experiment
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 10000
 ```
 #### Experimental result 1
-![image1](images\period10000.png)
+![image1](images/period10000.png)
 #### Discussion 1
 相較於 experiment 0，由於 check period 更低，controller 更頻繁的去check worker_queue 的狀態，  
 scaling 的操作更為頻繁。  
@@ -53,7 +53,7 @@ scaling 的操作更為頻繁。
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 100
 ```
 #### Experimental result 2
-![image2](images\period100.png)
+![image2](images/period100.png)
 #### Discussion 2  
 行為與 experiment 1 差不多，scaling 的操作並沒有更多，
 因為即使 check period 下降，造成的結果是前期 scaling up 的操作速率更快，  
@@ -73,7 +73,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 3
-![image3](images\threshold45_55.png)
+![image3](images/threshold45_55.png)
 #### Discussion 3 
 實驗結果顯示，相較於 `Experiment 0` controller 一開始確實更頻繁的去 scaling up。  
 
@@ -91,7 +91,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 4
-![image4](images\threshold5_95.png)
+![image4](images/threshold5_95.png)
 #### Discussion 4 
 實驗結果顯示，相較於上一個實驗設定(experiment 3) 整個過程中 controller 確實沒那麼頻繁的去做 scaling 的操作。
 任務完成時間也相對較長。    
@@ -108,7 +108,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 5
-![image5](images\workerQsize20.png)
+![image5](images/workerQsize20.png)
 #### Discussion 5
 從實驗結果顯示，對於大小只有 20 的 worker_queue 前期相對容易被填八成滿，controller 做連續的 scaling up。
 沒有 scaling down 的操作，原因是因為整個任務在下一次的 check period 內就結束了，  
@@ -128,7 +128,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 6
-![image6](images\wokerQsize240.png)
+![image6](images/wokerQsize240.png)
 #### Discussion 6
 從實驗結果看來，整個過程只有一次 scaling up，即 items 超過 192 那一次，  
 在第一次 scaling up 後剩餘在 input_queue 的 items 數也小於等於 4 個 (總共 200 個)。
@@ -146,7 +146,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 7
-![image7](images\writterQsize4.png)
+![image7](images/writterQsize4.png)
 #### Discussion 7 
 從 scaling 的結果來看，相較於 experiment 0 沒有什麼太大的變化，當 writer_queue 的 buffer 只剩下 4 個時，
 writer_queue容易變成整個系統的 bottleneck，拖慢整個系統運作速度，花比較久的時間完成檔案的寫入。    
@@ -163,9 +163,9 @@ writer_queue容易變成整個系統的 bottleneck，拖慢整個系統運作速
 #define CONSUMER_CONTROLLER_CHECK_PERIOD 1000000
 ```
 #### Experimental result 8
-![image8-1](images\readerQsize5_1.png)
+![image8-1](images/readerQsize5_1.png)
 
-![image8-2](images\readerQsize5_2.png)
+![image8-2](images/readerQsize5_2.png)
 #### Discussion 8 
 從 scaling 的行為看來，並沒有跟 experiment 0 差太多，  
 input_queue 小的話也會成為系統的 bottleneck，只是因為縮小幅度沒有像 experiment 7 一樣這麼嚴重，  
