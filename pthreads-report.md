@@ -136,6 +136,7 @@ worker_queue 的負載很快就掉到 80% 以下，scaling up 的操作便停止
 將 `worker_queue` 增加 40 個位置的大小，且 `check period = 100` 。只有 `worker_queue` 的負載在 192 以上時 controller 才會 scaling up。  
 為了讓系統能夠順利運作 worker_queue 的 size 是有 upper bound 的如果 `input file` 的總行數為 *n* ， *WORKER_QUEUE_SIZE <= n\*80%*，  
 如果 WORKER_QUEUE_SIZE 大於這個數字，即使全部 items 都已 enqueue 進 controller 也不會配置任何 consumer，整個系統會因為無 `consumer thread` 而卡住。  
+針對過大 `worker_queue` 的實驗，我嘗試過`WORKER_QUEUE_SIZE = 300`的 case，結果就是不會輸出任何東西，terminal卡住。  
 ```cpp
 #define READER_QUEUE_SIZE 200
 #define WORKER_QUEUE_SIZE 240
