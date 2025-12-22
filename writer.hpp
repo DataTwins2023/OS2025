@@ -56,6 +56,8 @@ void* Writer::process(void* arg) {
 		// 2. 將 item 寫入 output file
 		
 		writer->ofs << *item;
+		// delete
+		// writer 創建 item 接著由 writer 負責刪除
 		delete item; // 寫入後釋放 item 記憶體
 	}
 	return nullptr;

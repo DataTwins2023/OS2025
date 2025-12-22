@@ -78,6 +78,8 @@ int main(int argc, char** argv) {
 	// main 等待 writer 寫完所有內容到 ouput file 後才能結束
 	writer->join();
 
+	// 執行 pthread_cancel 取消 consumer_controller thread
+	// 讓 process 的無窮迴圈可以結束
 	consumer_controller->cancel();
 	consumer_controller->join();
 	// 6. 釋放 main 中配置的記憶體

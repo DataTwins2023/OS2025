@@ -54,9 +54,12 @@ void* Consumer::process(void* arg) {
 
 	// 設置 thread 的 cancel type 為 deferred cancelation:
 	// ->不馬上取消 thread, 而是在 thread 執行到可以被取消的點時才取消
+	// pthread_canceltype 決定「何時」真正結束
  	pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, nullptr);
 
 	while (!consumer->is_cancel) {
+		// pthread_setcancelstate 決定「要不要」理會取消的要求
+		// enable 的話，thread 會在可以被取消的點被取消
 		pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, nullptr);
 
 		// TODO: implements the Consumer's work
